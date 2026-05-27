@@ -61,6 +61,11 @@ def build(trigger: str, context: dict) -> tuple[str, str]:
     builder = builders.get(trigger, _manual)
     user_prompt = builder(context)
 
+    # Сообщение от пользователя из консольного чата — идёт первым
+    user_msg = context.get("user_message", "").strip()
+    if user_msg:
+        user_prompt = f"💬 Сообщение от пользователя:\n{user_msg}\n\n" + user_prompt
+
     # Если установлен фокус — добавляем жёсткое ограничение по проекту
     focus = context.get("focus")
     if focus:

@@ -51,7 +51,6 @@ async def run_service(config: dict) -> None:
     orchestrator = Orchestrator(config)
     loop = asyncio.get_running_loop()
 
-    # Graceful shutdown по SIGTERM/SIGINT
     stop_event = asyncio.Event()
 
     def _signal_handler():
@@ -62,9 +61,23 @@ async def run_service(config: dict) -> None:
         loop.add_signal_handler(sig, _signal_handler)
 
     await orchestrator.start()
-    print("\n✅ PC Assistant запущен. Ctrl+C для остановки.\n")
 
-    await stop_event.wait()
+    # Запускаем чат только когда stdin — терминал (не systemd / pipe)
+    tasks = [asyncio.create_task(stop_event.wait(), name="stop_watcher")]
+    if sys.stdin.isatty():
+        from core.console_chat import ConsoleChat
+        chat = ConsoleChat(orchestrator)
+        print("\n✅ PC Assistant запущен. Ctrl+C для остановки.")
+        tasks.append(asyncio.create_task(chat.run(), name="console_chat"))
+    else:
+        print("\n✅ PC Assistant запущен (фоновый режим).")
+
+    # Ждём пока что-то завершится
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    for t in pending:
+        t.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
+
     await orchestrator.stop()
 
 

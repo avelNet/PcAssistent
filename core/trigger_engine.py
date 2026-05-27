@@ -55,9 +55,16 @@ class TriggerEngine:
     # ─── Обработчики событий ────────────────────────────────────────────────
 
     async def _on_manual(self, data: dict) -> None:
-        """Ручной запуск из трея или напрямую."""
-        logger.info("TriggerEngine: ручной запуск")
-        await self._try_run("manual", voice=True, force=True)
+        """Ручной запуск из трея, консольного чата или напрямую."""
+        reason = data.get("reason", "manual") if data else "manual"
+        logger.info("TriggerEngine: ручной запуск [%s]", reason)
+
+        # Дополнительный контекст от пользователя (из консольного чата)
+        extra = {}
+        if data and data.get("extra_context"):
+            extra["user_message"] = data["extra_context"]
+
+        await self._try_run("manual", voice=True, force=True, extra=extra or None)
 
     async def _on_git_changed(self, data: dict) -> None:
         """Новый коммит — запустить через 2 минуты тишины."""
