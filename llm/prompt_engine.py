@@ -5,6 +5,7 @@ prompt_engine.py — формирует промпты для LLM под каж�
 import json
 import logging
 from datetime import date
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
