@@ -1,0 +1,32 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Данные (хранятся в ~/.local/share/pc-assistant/)
+*.sqlite
+*.db
+
+# Логи
+*.log
+
+# Секреты
+config.local.yaml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+
+# Claude Code
+.claude/
