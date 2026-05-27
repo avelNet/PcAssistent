@@ -1,0 +1,25 @@
+[Unit]
+Description=PC Assistant — локальный AI-ассистент разработчика
+Documentation=https://github.com/avelNet/PcAssistent
+After=network-online.target graphical-session.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/Development/PcAssistent/main.py
+WorkingDirectory=%h/Development/PcAssistent
+Restart=on-failure
+RestartSec=30
+
+# Логи через journald (доступны через: journalctl --user -u pc-assistant -f)
+StandardOutput=journal
+StandardError=journal
+
+# Переменные окружения для Wayland/GUI уведомлений
+Environment=DISPLAY=:0
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+
+[Install]
+WantedBy=default.target
