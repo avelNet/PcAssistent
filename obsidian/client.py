@@ -322,14 +322,10 @@ class ObsidianClient:
         else:
             logger.info("obsidian[fs]: '%s' уже существует — пропускаем", path)
 
-        if open_after and self.auto_open:
-            # Открываем vault-папку (не конкретный файл — REST API другого vault'а)
-            # Просто пишем уведомление пользователю
-            from core.notifier import notify
-            await notify(
-                "Задачи записаны",
-                f"Obsidian → {path.parent.name}/{path.name}",
-            )
+        if open_after and self.auto_open and created:
+            # Открываем заметку в Obsidian и перемещаем на второй монитор
+            from core.notifier import open_obsidian_note
+            await open_obsidian_note(path)
         return True
 
     async def append_note_fs(self, path: Path, content: str) -> bool:
