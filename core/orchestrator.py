@@ -5,8 +5,7 @@ orchestrator.py — точка сборки системы.
 
 import asyncio
 import logging
-import signal
-from datetime import datetime, timedelta, time as dt_time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import yaml

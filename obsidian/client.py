@@ -85,6 +85,24 @@ class ObsidianClient:
         except Exception:
             return False
 
+    async def project_exists_in_vault(self, project: str) -> bool:
+        """
+        Проверить что папка проекта реально существует в vault (не создавать!).
+        Задачи проекта пишем в {project}/Daily/ только если папка уже есть.
+        Иначе используем корневую Daily/ — чтобы не засорять чужие vault-ы.
+        """
+        if not self.enabled or not project:
+            return False
+        try:
+            session = await self._get_session()
+            async with session.get(
+                f"{self.host}/vault/{project}/",
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
     # ─── Базовые CRUD ────────────────────────────────────────────────────────
 
     async def read_note(self, path: str) -> Optional[str]:
@@ -256,10 +274,10 @@ class ObsidianClient:
     def daily_path(self, project: Optional[str] = None) -> str:
         """
         Путь к дейли заметке относительно vault root (§9.3 Правило 2):
-          С проектом:  {project}/Daily/YYYY-MM-DD.md
-          Без проекта: Daily/YYYY-MM-DD.md
+          С проектом:  {project}/Daily/DD.MM.YYYY.md
+          Без проекта: Daily/DD.MM.YYYY.md
         """
-        today = date.today().strftime("%Y-%m-%d")
+        today = date.today().strftime("%d.%m.%Y")
         if project:
             return f"{project}/{self.daily_folder}/{today}.md"
         return f"{self.daily_folder}/{today}.md"
@@ -277,7 +295,7 @@ class ObsidianClient:
         Структура: frontmatter → заголовок → пролог → задачи по приоритетам.
         id задачи кодируется как HTML-комментарий для обратной синхронизации.
         """
-        today_str  = date.today().strftime("%Y-%m-%d")
+        today_str  = date.today().strftime("%d.%m.%Y")
         today_disp = _today_display()
 
         lines = ["---", f"date: {today_str}", "type: task-list"]

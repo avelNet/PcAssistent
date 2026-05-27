@@ -55,9 +55,9 @@ collectors:
     min_length: 20
 
 obsidian:
-  enabled: false                # включить когда установишь плагин Local REST API
-  api_key: "YOUR_KEY_HERE"
-  root: "/home/pavel/Obsidian"  # корень — все проекты внутри найдутся сами
+  enabled: true
+  api_key: "7fe2107b9e090577268261969ea9cab80a24bafb415a5f32b94e72c57873737c"
+  root: "/home/pavel/Obsidian/Tap2Go Vault"  # корень vault-а
   daily_folder: "Daily"         # папка с дневными заметками внутри каждого vault
   auto_open: true
   host: "https://127.0.0.1:27124"
