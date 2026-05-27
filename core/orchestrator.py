@@ -14,8 +14,12 @@ import yaml
 from core.event_bus import EventBus
 from core.trigger_engine import TriggerEngine
 from collectors.git_watcher import GitWatcher
+from collectors.process_monitor import ProcessMonitor
 from llm.context_builder import ContextBuilder
 from llm.client_factory import create_llm_client
+from obsidian.client import ObsidianClient
+from obsidian.task_syncer import TaskSyncer
+from obsidian.watcher import ObsidianWatcher
 from storage import db, context_store
 
 logger = logging.getLogger(__name__)
@@ -63,9 +67,13 @@ class Orchestrator:
 
         # Модули (инициализируются в start())
         self.git_watcher: GitWatcher | None = None
-        self.llm_client = None   # OllamaClient или OpenRouterClient
+        self.process_monitor: ProcessMonitor | None = None
+        self.llm_client = None
         self.context_builder: ContextBuilder | None = None
         self.trigger_engine: TriggerEngine | None = None
+        self.obsidian: ObsidianClient | None = None
+        self.task_syncer: TaskSyncer | None = None
+        self.obsidian_watcher: ObsidianWatcher | None = None
 
     async def start(self) -> None:
         """Инициализировать и запустить все модули."""
@@ -83,6 +91,10 @@ class Orchestrator:
         self.git_watcher = GitWatcher(self.config, self.bus)
         await self.git_watcher.start()
 
+        # 3b. Process monitor — screen lock, сессии, idle
+        self.process_monitor = ProcessMonitor(self.config, self.bus)
+        await self.process_monitor.start()
+
         # 4. LLM клиент (Ollama или OpenRouter — зависит от config.llm.provider)
         self.llm_client = create_llm_client(self.config)
 
@@ -99,7 +111,21 @@ class Orchestrator:
             self.config, self.bus, self.llm_client, self.context_builder
         )
 
-        # 7. Подписка на результат LLM (для логирования в Day 1)
+        # 7. Obsidian клиент + синхронизатор задач
+        self.obsidian = ObsidianClient(self.config)
+        self.task_syncer = TaskSyncer(self.config, self.bus, self.obsidian)
+
+        # 7b. Obsidian watcher (inotify на vault)
+        self.obsidian_watcher = ObsidianWatcher(self.config, self.bus)
+        await self.obsidian_watcher.start()
+
+        # 7c. При старте — синхронизировать текущие задачи из Obsidian в SQLite
+        if self.obsidian.enabled:
+            synced = await self.task_syncer.sync_from_obsidian()
+            if synced:
+                logger.info("Orchestrator: синхронизировано %d задач из Obsidian", synced)
+
+        # 8. Подписка на результат LLM (для логирования в Day 1)
         self.bus.on("llm.completed", self._on_llm_completed)
 
         # 8. Планирование ночной очистки
@@ -122,6 +148,12 @@ class Orchestrator:
         # Останавливаем watchdog
         if self.git_watcher:
             await asyncio.to_thread(self.git_watcher.stop)
+        if self.obsidian_watcher:
+            await asyncio.to_thread(self.obsidian_watcher.stop)
+
+        # Закрываем Obsidian клиент
+        if self.obsidian:
+            await self.obsidian.close()
 
         # Закрываем LLM клиент (Ollama — выгружает модель из RAM, OpenRouter — закрывает сессию)
         if self.llm_client:

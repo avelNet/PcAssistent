@@ -1,9 +1,6 @@
 """
 trigger_engine.py — единственный модуль который решает запускать ли LLM.
 Все остальные модули только эмитят события — решение всегда здесь.
-
-Day 1: только manual триггер.
-Day 2+: добавятся morning_briefing, after_work_session, user_returned, evening_summary.
 """
 
 import asyncio
@@ -11,7 +8,7 @@ import hashlib
 import json
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, date
 
 from core.event_bus import EventBus
 from llm.context_builder import ContextBuilder
@@ -29,18 +26,23 @@ class TriggerEngine:
         self.ollama = ollama
         self.context_builder = context_builder
 
-        self._last_run_ts: float = 0          # unix timestamp последнего запуска
-        self._last_context_hash: str = ""     # MD5 последнего контекста
-        self._running: bool = False           # защита от параллельного запуска
-        self._pending_spike: dict | None = None  # отложенный спайк ошибок
+        self._last_run_ts: float = 0
+        self._last_context_hash: str = ""
+        self._running: bool = False
+        self._pending_spike: dict | None = None
 
         # Состояние процессов (обновляется от process_monitor)
         self._is_working: bool = False
         self._is_leisure: bool = False
-        self._is_fullscreen: bool = False
+        self._is_locked: bool = False
         self._idle_minutes: int = 0
 
+        # Расписание: утро/вечер — запускаем только раз в день
+        self._morning_done_date: date | None = None
+        self._evening_done_date: date | None = None
+
         self._subscribe()
+        asyncio.create_task(self._schedule_loop(), name="trigger_schedule")
 
     def _subscribe(self) -> None:
         """Подписаться на все события которые могут инициировать запуск LLM."""
@@ -105,8 +107,49 @@ class TriggerEngine:
             return
         self._is_working = data.get("is_working", False)
         self._is_leisure = data.get("is_leisure", False)
-        self._is_fullscreen = data.get("is_fullscreen", False)
+        self._is_locked = data.get("is_locked", False)
         self._idle_minutes = data.get("idle_minutes", 0)
+
+    # ─── Расписание утро/вечер ───────────────────────────────────────────────
+
+    async def _schedule_loop(self) -> None:
+        """Цикл проверки расписания — утренний и вечерний брифинги."""
+        # Ждём пока система полностью запустится
+        await asyncio.sleep(30)
+
+        while True:
+            try:
+                await self._check_schedule()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("TriggerEngine: ошибка в schedule_loop")
+            await asyncio.sleep(60)  # проверяем каждую минуту
+
+    async def _check_schedule(self) -> None:
+        """Проверить нужно ли запустить утренний или вечерний брифинг."""
+        now = datetime.now()
+        today = now.date()
+        hour = now.hour
+
+        morning_hour = self.config.get("morning_hour", 9)
+        evening_hour = self.config.get("evening_hour", 19)
+
+        # Утренний брифинг — один раз в день в morning_hour
+        if (hour == morning_hour
+                and self._morning_done_date != today
+                and not self._is_locked):
+            self._morning_done_date = today
+            logger.info("TriggerEngine: утренний брифинг (%d:xx)", morning_hour)
+            await self._try_run("morning_briefing", voice=True)
+
+        # Вечерний итог — один раз в день в evening_hour
+        elif (hour == evening_hour
+              and self._evening_done_date != today
+              and not self._is_locked):
+            self._evening_done_date = today
+            logger.info("TriggerEngine: вечерний итог (%d:xx)", evening_hour)
+            await self._try_run("evening_summary", voice=True)
 
     # ─── Основная логика ────────────────────────────────────────────────────
 
@@ -132,8 +175,8 @@ class TriggerEngine:
         if force:
             return None  # ручной запуск всегда проходит
 
-        if self._is_fullscreen:
-            return "fullscreen"
+        if self._is_locked:
+            return "screen_locked"
 
         if self._is_leisure:
             return "leisure"
@@ -213,7 +256,11 @@ class TriggerEngine:
             self._last_run_ts = time.time()
             self._last_context_hash = context_hash
 
-            # 10. Уведомляем систему
+            # 10. Desktop-уведомление с задачами
+            from core.notifier import notify_tasks
+            await notify_tasks(tasks, prologue=prologue, trigger=trigger)
+
+            # 11. Уведомляем систему
             await self.bus.emit("llm.completed", {
                 "tasks": tasks,
                 "prologue": prologue,
