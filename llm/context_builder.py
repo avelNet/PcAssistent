@@ -111,6 +111,26 @@ class ContextBuilder:
         snapshots = await self.git_watcher.get_all_snapshots()
         return [s["name"] for s in snapshots if s.get("name")]
 
+    async def get_project_git_path(self, project: str) -> str | None:
+        """Абсолютный путь к репозиторию проекта (по имени папки)."""
+        if not self.git_watcher:
+            return None
+        snapshots = await self.git_watcher.get_all_snapshots()
+        for s in snapshots:
+            if s.get("name") == project:
+                return s.get("path")
+        return None
+
+    async def get_project_snapshot(self, project: str) -> dict | None:
+        """Полный git-снапшот для проекта по имени."""
+        if not self.git_watcher:
+            return None
+        snapshots = await self.git_watcher.get_all_snapshots()
+        for s in snapshots:
+            if s.get("name") == project:
+                return s
+        return None
+
     # ─── Источники ──────────────────────────────────────────────────────────
 
     async def _get_git_context(self) -> list[dict]:

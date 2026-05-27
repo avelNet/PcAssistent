@@ -13,6 +13,7 @@ from datetime import datetime, date
 from core.event_bus import EventBus
 from llm.context_builder import ContextBuilder
 from llm import prompt_engine, task_parser
+from obsidian.project_writer import ProjectWriter
 from storage import context_store
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,12 @@ class TriggerEngine:
         # Расписание: утро/вечер — запускаем только раз в день
         self._morning_done_date: date | None = None
         self._evening_done_date: date | None = None
+
+        # Отслеживаем переключения фокуса для анонса фоновых задач
+        self._last_known_focus: str | None = None
+
+        # Документация проекта в Obsidian
+        self._project_writer = ProjectWriter(config)
 
         self._subscribe()
         asyncio.create_task(self._schedule_loop(), name="trigger_schedule")
@@ -203,6 +210,22 @@ class TriggerEngine:
             # 1. Собираем контекст
             context = await self.context_builder.build(trigger, extra=extra)
 
+            # 1b. Проверяем переключение фокуса — анонсируем фоновые задачи нового проекта
+            current_focus = context.get("focus")
+            if (current_focus
+                    and current_focus != self._last_known_focus
+                    and self._last_known_focus is not None):
+                logger.info(
+                    "TriggerEngine: переключение фокуса %s → %s, анонсирую фоновые задачи",
+                    self._last_known_focus, current_focus
+                )
+                asyncio.create_task(
+                    self._project_writer.announce_focus_switch(
+                        current_focus, self._full_config
+                    ),
+                    name="focus_switch_announce",
+                )
+
             # 2. Проверяем что контекст изменился
             context_hash = hashlib.md5(
                 json.dumps(context, sort_keys=True, ensure_ascii=False, default=str).encode()
@@ -256,6 +279,7 @@ class TriggerEngine:
             # 9. Обновляем состояние
             self._last_run_ts = time.time()
             self._last_context_hash = context_hash
+            self._last_known_focus = current_focus  # запоминаем фокус ПОСЛЕ успешного запуска
 
             # 10. Уведомляем систему → TaskSyncer запишет в Obsidian
             await self.bus.emit("llm.completed", {
@@ -283,8 +307,23 @@ class TriggerEngine:
             logger.info("\n%s", task_parser.format_tasks_for_display(tasks))
             logger.info("═" * 50)
 
-            # 14. Запускаем фоновый анализ остальных проектов (не блокирует)
-            active_project = context.get("focus")
+            # 14. Документация активного проекта — обновляем структуру в Obsidian
+            if current_focus and self._project_writer.enabled:
+                git_snap = await self.context_builder.get_project_snapshot(current_focus)
+                repo_path = await self.context_builder.get_project_git_path(current_focus)
+                errors = context.get("errors")
+                asyncio.create_task(
+                    self._project_writer.write_project_structure(
+                        project=current_focus,
+                        repo_path=repo_path,
+                        git_snapshot=git_snap,
+                        errors=errors,
+                    ),
+                    name="project_structure_update",
+                )
+
+            # 15. Запускаем фоновый анализ остальных проектов (не блокирует)
+            active_project = current_focus
             asyncio.create_task(
                 self._run_background_projects(skip=active_project),
                 name="background_analysis",
