@@ -4,6 +4,7 @@ notifier.py — desktop-уведомления через notify-send + откр
 
 import asyncio
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -133,28 +134,31 @@ async def notify_auto_completed(task_title: str) -> None:
     )
 
 
-# ─── Открытие Obsidian на втором мониторе ────────────────────────────────────
+# ─── Открытие Obsidian ───────────────────────────────────────────────────────
 
 async def open_obsidian_note(fs_path: str | Path) -> None:
     """
-    Открыть заметку в Obsidian и переместить окно на второй монитор (если есть).
+    Открыть заметку в Obsidian.
 
-    1. xdg-open obsidian://open?path=... — просит Obsidian открыть файл
-    2. Короткая пауза — Obsidian реагирует на URI не мгновенно
-    3. wmctrl — перемещает окно Obsidian на второй монитор (если два монитора)
+    Стратегия зависит от окружения:
+    - Всегда: xdg-open obsidian://open?path=... (с правильным URL-encoding)
+    - X11: wmctrl поднимает и перемещает окно на второй монитор
+    - Wayland/GNOME: xdotool / фокус через nативный Wayland (лучшее из доступного)
     """
+    import urllib.parse
     path = str(fs_path)
 
-    # 1. Открываем через URI-схему Obsidian
+    # 1. Открываем через URI — путь обязательно экранируем (пробелы, кириллица)
+    encoded = urllib.parse.quote(path, safe="")
+    uri = f"obsidian://open?path={encoded}"
     try:
-        uri = f"obsidian://open?path={path}"
         proc = await asyncio.create_subprocess_exec(
             "xdg-open", uri,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
         await asyncio.wait_for(proc.wait(), timeout=5)
-        logger.debug("notifier: открываем Obsidian → %s", path)
+        logger.info("notifier: Obsidian URI отправлен → %s", path)
     except FileNotFoundError:
         logger.debug("notifier: xdg-open не найден")
         return
@@ -162,40 +166,97 @@ async def open_obsidian_note(fs_path: str | Path) -> None:
         logger.debug("notifier: xdg-open ошибка — %s", e)
         return
 
-    # 2. Ждём пока Obsidian откроется
+    # 2. Пауза — Obsidian обрабатывает URI асинхронно
     await asyncio.sleep(1.5)
 
-    # 3. Перемещаем на второй монитор если он есть
+    # 3. Поднимаем окно на передний план
+    is_wayland = bool(os.environ.get("WAYLAND_DISPLAY"))
+
+    if is_wayland:
+        await _focus_obsidian_wayland()
+    else:
+        await _focus_obsidian_x11()
+
+
+async def _focus_obsidian_x11() -> None:
+    """Фокус + перемещение на второй монитор через wmctrl (X11)."""
     monitors = await _get_monitors()
     if len(monitors) >= 2:
         m = monitors[1]
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "wmctrl", "-r", "Obsidian",
-                "-e", f"0,{m['x']},{m['y']},{m['w']},{m['h']}",
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await asyncio.wait_for(proc.wait(), timeout=3)
-            logger.info(
-                "notifier: Obsidian перемещён на %s (%dx%d+%d+%d)",
-                m["name"], m["w"], m["h"], m["x"], m["y"],
-            )
-        except FileNotFoundError:
-            logger.debug("notifier: wmctrl не установлен — sudo apt install wmctrl")
-        except Exception as e:
-            logger.debug("notifier: wmctrl ошибка — %s", e)
+        cmd = ["wmctrl", "-r", "Obsidian", "-e",
+               f"0,{m['x']},{m['y']},{m['w']},{m['h']}"]
     else:
-        # Один монитор — просто поднимаем окно на передний план
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "wmctrl", "-a", "Obsidian",
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await asyncio.wait_for(proc.wait(), timeout=3)
-        except Exception:
-            pass
+        cmd = ["wmctrl", "-a", "Obsidian"]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=3)
+        logger.info("notifier: wmctrl: %s", " ".join(cmd))
+    except FileNotFoundError:
+        logger.debug("notifier: wmctrl не установлен")
+    except Exception as e:
+        logger.debug("notifier: wmctrl ошибка — %s", e)
+
+
+async def _focus_obsidian_wayland() -> None:
+    """
+    Фокус Obsidian на Wayland (GNOME).
+    Obsidian — snap/Electron — может работать через XWayland или нативный Wayland.
+    Пробуем последовательно несколько методов.
+    """
+    # Метод 1: xdotool (работает если Obsidian через XWayland)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "xdotool", "search", "--classname", "obsidian",
+            "windowactivate", "--sync",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        ret = await asyncio.wait_for(proc.wait(), timeout=3)
+        if ret == 0:
+            logger.info("notifier: xdotool активировал Obsidian")
+            return
+    except FileNotFoundError:
+        logger.debug("notifier: xdotool не установлен")
+    except Exception:
+        pass
+
+    # Метод 2: xdotool по имени окна
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "xdotool", "search", "--name", "Obsidian",
+            "windowactivate", "--sync",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        ret = await asyncio.wait_for(proc.wait(), timeout=3)
+        if ret == 0:
+            logger.info("notifier: xdotool (по имени) активировал Obsidian")
+            return
+    except Exception:
+        pass
+
+    # Метод 3: wmctrl с явным DISPLAY (XWayland-окна могут быть видны)
+    try:
+        env = {**os.environ, "DISPLAY": ":0"}
+        proc = await asyncio.create_subprocess_exec(
+            "wmctrl", "-a", "Obsidian",
+            env=env,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=3)
+        logger.debug("notifier: wmctrl -a Obsidian (через :0)")
+    except Exception:
+        pass
+
+    # Метод 4: нативный Wayland — ничего не можем сделать без root/extension.
+    # Obsidian получил URI и открыл файл — пользователь переключится сам.
+    logger.debug("notifier: Wayland — авто-фокус недоступен, файл открыт в Obsidian")
 
 
 async def _get_monitors() -> list[dict]:
