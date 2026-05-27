@@ -15,11 +15,21 @@ from core.event_bus import EventBus
 from core.trigger_engine import TriggerEngine
 from collectors.git_watcher import GitWatcher
 from collectors.process_monitor import ProcessMonitor
-from llm.context_builder import ContextBuilder
-from llm.client_factory import create_llm_client
+from collectors.fs_watcher import FSWatcher
+from collectors.clipboard_watcher import ClipboardWatcher
+from collectors.jetbrains_watcher import JetBrainsWatcher
+from errors.error_store import ErrorStore
+from errors.static_analyzer import StaticAnalyzer
+from productivity.focus_analyzer import FocusAnalyzer
+from productivity.session_tracker import SessionTracker
+from productivity.stats_builder import StatsBuilder
 from obsidian.client import ObsidianClient
 from obsidian.task_syncer import TaskSyncer
 from obsidian.watcher import ObsidianWatcher
+from obsidian.progress_tracker import ProgressTracker
+from llm.context_builder import ContextBuilder
+from llm.client_factory import create_llm_client
+from ui.tray_app import TrayApp
 from storage import db, context_store
 
 logger = logging.getLogger(__name__)
@@ -68,12 +78,22 @@ class Orchestrator:
         # Модули (инициализируются в start())
         self.git_watcher: GitWatcher | None = None
         self.process_monitor: ProcessMonitor | None = None
+        self.fs_watcher: FSWatcher | None = None
+        self.clipboard_watcher: ClipboardWatcher | None = None
+        self.jetbrains_watcher: JetBrainsWatcher | None = None
+        self.error_store: ErrorStore | None = None
+        self.static_analyzer: StaticAnalyzer | None = None
+        self.focus_analyzer: FocusAnalyzer | None = None
+        self.session_tracker: SessionTracker | None = None
+        self.stats_builder: StatsBuilder | None = None
         self.llm_client = None
         self.context_builder: ContextBuilder | None = None
         self.trigger_engine: TriggerEngine | None = None
         self.obsidian: ObsidianClient | None = None
         self.task_syncer: TaskSyncer | None = None
         self.obsidian_watcher: ObsidianWatcher | None = None
+        self.progress_tracker: ProgressTracker | None = None
+        self.tray_app: TrayApp | None = None
 
     async def start(self) -> None:
         """Инициализировать и запустить все модули."""
@@ -95,6 +115,30 @@ class Orchestrator:
         self.process_monitor = ProcessMonitor(self.config, self.bus)
         await self.process_monitor.start()
 
+        # 3c. FS watcher — inotify на рабочие директории
+        self.fs_watcher = FSWatcher(self.config, self.bus)
+        await self.fs_watcher.start()
+
+        # 3d. Clipboard watcher
+        self.clipboard_watcher = ClipboardWatcher(self.config, self.bus)
+        await self.clipboard_watcher.start()
+
+        # 3e. JetBrains watcher
+        self.jetbrains_watcher = JetBrainsWatcher(self.config, self.bus)
+        await self.jetbrains_watcher.start()
+
+        # 3f. Productivity — focus + session
+        self.focus_analyzer  = FocusAnalyzer(self.config, self.bus)
+        self.session_tracker = SessionTracker(self.config, self.bus)
+        self.session_tracker.subscribe()
+        await self.focus_analyzer.start()
+
+        # 3g. Errors — error_store + static_analyzer
+        self.error_store = ErrorStore(self.config, self.bus)
+        self.error_store.subscribe()
+        self.static_analyzer = StaticAnalyzer(self.config, self.bus)
+        self.static_analyzer.subscribe()
+
         # 4. LLM клиент (Ollama или OpenRouter — зависит от config.llm.provider)
         self.llm_client = create_llm_client(self.config)
 
@@ -103,8 +147,20 @@ class Orchestrator:
         if hasattr(self.llm_client, "start_background_probe"):
             self.llm_client.start_background_probe()
 
+        # 4b. StatsBuilder (нужен session_tracker и git_watcher)
+        self.stats_builder = StatsBuilder(
+            session_tracker=self.session_tracker,
+            git_watcher=self.git_watcher,
+        )
+
         # 5. Сборщик контекста
-        self.context_builder = ContextBuilder(self.config, git_watcher=self.git_watcher)
+        self.context_builder = ContextBuilder(
+            self.config,
+            git_watcher=self.git_watcher,
+            clipboard_watcher=self.clipboard_watcher,
+            jetbrains_watcher=self.jetbrains_watcher,
+            stats_builder=self.stats_builder,
+        )
 
         # 6. TriggerEngine — подписывается на события
         self.trigger_engine = TriggerEngine(
@@ -119,7 +175,15 @@ class Orchestrator:
         self.obsidian_watcher = ObsidianWatcher(self.config, self.bus)
         await self.obsidian_watcher.start()
 
-        # 7c. При старте — синхронизировать текущие задачи из Obsidian в SQLite
+        # 7c. ProgressTracker — статистика задач за 7 дней
+        self.progress_tracker = ProgressTracker(days=7)
+
+        # 7d. UI трей
+        self.tray_app = TrayApp(self.config, self.bus)
+        self.tray_app.subscribe()
+        await self.tray_app.start()
+
+        # 7f. При старте — синхронизировать текущие задачи из Obsidian в SQLite
         if self.obsidian.enabled:
             synced = await self.task_syncer.sync_from_obsidian()
             if synced:
@@ -145,11 +209,21 @@ class Orchestrator:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
 
-        # Останавливаем watchdog
+        # Останавливаем watchdog и фоновые модули
         if self.git_watcher:
             await asyncio.to_thread(self.git_watcher.stop)
+        if self.fs_watcher:
+            await asyncio.to_thread(self.fs_watcher.stop)
         if self.obsidian_watcher:
             await asyncio.to_thread(self.obsidian_watcher.stop)
+        if self.clipboard_watcher:
+            self.clipboard_watcher.stop()
+        if self.jetbrains_watcher:
+            self.jetbrains_watcher.stop()
+        if self.focus_analyzer:
+            self.focus_analyzer.stop()
+        if self.tray_app:
+            self.tray_app.stop()
 
         # Закрываем Obsidian клиент
         if self.obsidian:

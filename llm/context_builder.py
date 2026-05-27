@@ -13,9 +13,19 @@ logger = logging.getLogger(__name__)
 
 
 class ContextBuilder:
-    def __init__(self, config: dict, git_watcher=None):
+    def __init__(
+        self,
+        config: dict,
+        git_watcher=None,
+        clipboard_watcher=None,
+        jetbrains_watcher=None,
+        stats_builder=None,
+    ):
         self.config = config
         self.git_watcher = git_watcher
+        self.clipboard_watcher = clipboard_watcher
+        self.jetbrains_watcher = jetbrains_watcher
+        self.stats_builder = stats_builder
         self.ollama_num_ctx = config.get("ollama", {}).get("num_ctx", 8192)
 
         # Vault reader — инициализируем если папка существует
@@ -48,11 +58,14 @@ class ContextBuilder:
 
         # Запускаем все источники параллельно
         tasks = {
-            "git":         self._get_git_context(),
-            "history":     self._get_task_history(),
-            "today_tasks": context_store.get_tasks_for_date(),
-            "errors":      context_store.get_errors(hours=24),
-            "obsidian":    self._get_vault_context(),
+            "git":          self._get_git_context(),
+            "history":      self._get_task_history(),
+            "today_tasks":  context_store.get_tasks_for_date(),
+            "errors":       context_store.get_errors(hours=24),
+            "obsidian":     self._get_vault_context(),
+            "clipboard":    self._get_clipboard_context(),
+            "ide":          self._get_jetbrains_context(),
+            "productivity": self._get_productivity_context(),
         }
 
         results = await asyncio.gather(*tasks.values(), return_exceptions=True)
@@ -97,6 +110,32 @@ class ContextBuilder:
 
     async def _get_task_history(self) -> list[dict]:
         return await context_store.get_task_history(days=3)
+
+    async def _get_clipboard_context(self) -> list[dict]:
+        """Последние записи буфера обмена."""
+        if not self.clipboard_watcher:
+            return []
+        return self.clipboard_watcher.get_history(limit=10)
+
+    async def _get_jetbrains_context(self) -> dict:
+        """Снапшот JetBrains IDE."""
+        if not self.jetbrains_watcher:
+            return {}
+        try:
+            return await self.jetbrains_watcher.get_snapshot()
+        except Exception as e:
+            logger.debug("ContextBuilder: jetbrains snapshot ошибка — %s", e)
+            return {}
+
+    async def _get_productivity_context(self) -> dict:
+        """Метрики продуктивности текущей сессии."""
+        if not self.stats_builder:
+            return {}
+        try:
+            return await self.stats_builder.build()
+        except Exception as e:
+            logger.debug("ContextBuilder: stats_builder ошибка — %s", e)
+            return {}
 
     async def _get_vault_context(self) -> dict:
         """
