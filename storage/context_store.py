@@ -15,6 +15,10 @@ from storage import db
 
 logger = logging.getLogger(__name__)
 
+# Глобальный лок — SQLite не поддерживает параллельные записи из разных потоков
+# через одно соединение. Все write-операции сериализуем.
+_write_lock = asyncio.Lock()
+
 # ─── Вспомогательные ────────────────────────────────────────────────────────
 
 def _md5(data: Any) -> str:
@@ -27,8 +31,14 @@ def _conn() -> sqlite3.Connection:
 
 
 async def _run(fn, *args):
-    """Запустить синхронную функцию в thread pool."""
+    """Запустить синхронную функцию в thread pool (только чтение)."""
     return await asyncio.to_thread(fn, *args)
+
+
+async def _run_write(fn, *args):
+    """Запустить синхронную write-функцию под локом (сериализует записи)."""
+    async with _write_lock:
+        return await asyncio.to_thread(fn, *args)
 
 
 # ─── Контекстные снапшоты ───────────────────────────────────────────────────
@@ -54,7 +64,7 @@ async def save_context(source: str, data: dict) -> None:
         conn.commit()
         return True
 
-    saved = await _run(_do)
+    saved = await _run_write(_do)
     if saved:
         logger.debug("context_store: сохранён снапшот '%s'", source)
 
@@ -117,7 +127,7 @@ async def save_tasks(tasks: list[dict]) -> None:
             )
         conn.commit()
 
-    await _run(_do)
+    await _run_write(_do)
     logger.info("context_store: сохранено %d задач", len(tasks))
 
 
@@ -166,7 +176,7 @@ async def update_tasks_from_obsidian(tasks: list[dict]) -> None:
             )
         conn.commit()
 
-    await _run(_do)
+    await _run_write(_do)
 
 
 # ─── Ошибки ─────────────────────────────────────────────────────────────────
@@ -207,7 +217,7 @@ async def save_error(error: dict) -> bool:
         conn.commit()
         return True
 
-    return await _run(_do)
+    return await _run_write(_do)
 
 
 async def get_errors(hours: int = 24) -> list[dict]:
@@ -271,7 +281,7 @@ async def save_productivity(session: dict) -> None:
         )
         conn.commit()
 
-    await _run(_do)
+    await _run_write(_do)
 
 
 async def get_productivity(days: int = 1) -> list[dict]:
@@ -313,7 +323,7 @@ async def save_llm_run(trigger: str, model: str, duration_s: float,
         )
         conn.commit()
 
-    await _run(_do)
+    await _run_write(_do)
 
 
 async def get_last_llm_run() -> dict | None:
@@ -364,5 +374,5 @@ async def cleanup(ttl_days: int = 7) -> None:
         conn.commit()
         return total
 
-    deleted = await _run(_do)
+    deleted = await _run_write(_do)
     logger.info("cleanup: удалено %d устаревших записей (TTL=%d дней)", deleted, ttl_days)

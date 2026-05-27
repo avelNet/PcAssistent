@@ -261,9 +261,15 @@ def _section_ide(ctx: dict) -> str:
         return ""
 
     lines = ["## IDE (JetBrains)"]
+
+    # projects — список dict {name, path} или строк (legacy)
     projects = ide.get("projects", [])
     if projects:
-        lines.append("  Проекты: " + ", ".join(projects[:5]))
+        names = [
+            p["name"] if isinstance(p, dict) else str(p)
+            for p in projects[:5]
+        ]
+        lines.append("  Проекты: " + ", ".join(names))
 
     open_files = ide.get("open_files", [])
     if open_files:
@@ -275,7 +281,10 @@ def _section_ide(ctx: dict) -> str:
     if breakpoints:
         lines.append(f"  Breakpoints ({len(breakpoints)}) — вероятно проблемные места:")
         for bp in breakpoints[:5]:
-            lines.append(f"    {bp}")
+            if isinstance(bp, dict):
+                lines.append(f"    {bp.get('file', '')}:{bp.get('line', '')}")
+            else:
+                lines.append(f"    {bp}")
 
     return "\n".join(lines) + "\n"
 

@@ -130,32 +130,46 @@ class JetBrainsWatcher:
     def _parse_recent_projects(self, xml_path: Path) -> list[dict]:
         """
         Парсит recentProjects.xml.
-        Возвращает: [{ path, name, last_opened_ts }]
+        Возвращает: [{ path, name }]
+
+        Поддерживает два формата JetBrains:
+          Старый: RecentProjectsManager > option[recentPaths] > list > option[value=path]
+          Новый:  RecentProjectsManager > option[additionalInfo] > map > entry[key=path]
         """
         tree = ET.parse(xml_path)
         root = tree.getroot()
         results = []
 
-        # Структура: RecentProjectsManager > option[name=recentPaths] > list > option
         for comp in root.iter("component"):
             if comp.get("name") != "RecentProjectsManager":
                 continue
+
+            # Новый формат (PyCharm 2024+): additionalInfo > map > entry[key=path]
             for opt in comp.iter("option"):
-                if opt.get("name") != "recentPaths":
-                    continue
-                lst = opt.find("list")
-                if lst is None:
-                    continue
-                for entry in lst:
-                    raw_path = entry.get("value", "")
-                    # JetBrains хранит как $USER_HOME$/...
-                    clean = raw_path.replace("$USER_HOME$", str(Path.home()))
-                    p = Path(clean)
-                    if p.exists():
-                        results.append({
-                            "path": str(p),
-                            "name": p.name,
-                        })
+                if opt.get("name") == "additionalInfo":
+                    for entry in opt.iter("entry"):
+                        raw_path = entry.get("key", "")
+                        if raw_path:
+                            clean = raw_path.replace("$USER_HOME$", str(Path.home()))
+                            p = Path(clean)
+                            if p.exists():
+                                results.append({"path": str(p), "name": p.name})
+                    break
+
+            # Старый формат: recentPaths > list > option[value=path]
+            if not results:
+                for opt in comp.iter("option"):
+                    if opt.get("name") == "recentPaths":
+                        lst = opt.find("list")
+                        if lst is not None:
+                            for entry in lst:
+                                raw_path = entry.get("value", "")
+                                clean = raw_path.replace("$USER_HOME$", str(Path.home()))
+                                p = Path(clean)
+                                if p.exists():
+                                    results.append({"path": str(p), "name": p.name})
+                        break
+
         return results
 
     def _parse_workspace(self, xml_path: Path) -> tuple[list[str], list[dict]]:
