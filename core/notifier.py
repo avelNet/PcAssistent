@@ -52,6 +52,64 @@ async def notify(
         logger.debug("notifier: ошибка — %s", e)
 
 
+async def notify_with_obsidian_action(
+    title: str,
+    body: str,
+    obsidian_path: str | Path | None = None,
+) -> None:
+    """
+    Уведомление с кнопкой «Открыть Obsidian».
+    При клике — фокусирует Obsidian через gtk-launch (работает на Wayland).
+    """
+    try:
+        cmd = [
+            "notify-send",
+            "--urgency", "normal",
+            "--expire-time", "15000",
+            "--icon", "appointment-new",
+            "--action", "open:Открыть Obsidian",
+            title,
+            body,
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=20)
+            clicked = stdout.decode().strip() == "open"
+        except asyncio.TimeoutError:
+            proc.kill()
+            clicked = False
+
+        if clicked:
+            # Открываем файл если передан путь, потом фокусируем
+            if obsidian_path:
+                import urllib.parse
+                encoded = urllib.parse.quote(str(obsidian_path), safe="")
+                uri_proc = await asyncio.create_subprocess_exec(
+                    "xdg-open", f"obsidian://open?path={encoded}",
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await asyncio.wait_for(uri_proc.wait(), timeout=5)
+                await asyncio.sleep(0.8)
+
+            # Фокусируем окно
+            await asyncio.create_subprocess_exec(
+                "gtk-launch", "obsidian_obsidian",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            logger.info("notifier: пользователь кликнул → открываем Obsidian")
+
+    except FileNotFoundError:
+        logger.debug("notifier: notify-send не найден")
+    except Exception as e:
+        logger.debug("notifier: notify_with_obsidian_action ошибка — %s", e)
+
+
 async def notify_tasks(tasks: list[dict], prologue: str = "", trigger: str = "") -> None:
     """
     Одно аккуратное уведомление с задачами дня.
@@ -254,9 +312,16 @@ async def _focus_obsidian_wayland() -> None:
     except Exception:
         pass
 
-    # Метод 4: нативный Wayland — ничего не можем сделать без root/extension.
-    # Obsidian получил URI и открыл файл — пользователь переключится сам.
-    logger.debug("notifier: Wayland — авто-фокус недоступен, файл открыт в Obsidian")
+    # Метод 4: нативный Wayland — показываем уведомление с кнопкой «Открыть Obsidian»
+    # Пользователь кликает → окно выходит на передний план (Wayland разрешает по клику)
+    logger.debug("notifier: Wayland — авто-фокус недоступен, показываем кнопку")
+    asyncio.create_task(
+        notify_with_obsidian_action(
+            "📝 Заметка записана в Obsidian",
+            "Нажми чтобы открыть",
+            obsidian_path=None,  # файл уже открыт через URI выше
+        )
+    )
 
 
 async def _get_monitors() -> list[dict]:
