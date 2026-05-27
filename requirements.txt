@@ -1,0 +1,24 @@
+# HTTP / Async
+aiohttp>=3.9
+
+# Файловые события (inotify)
+watchdog>=4.0
+
+# Системный мониторинг
+psutil>=5.9
+
+# Конфиг
+pyyaml>=6.0
+
+# Голос (устанавливается отдельно: pip install piper-tts)
+# piper-tts>=1.2
+
+# UI — GTK трей (требует системный пакет: apt install python3-gi gir1.2-ayatanaappindicator3-0.1)
+# PyGObject>=3.44
+
+# Статический анализ (инструменты, не runtime зависимости)
+# ruff>=0.4
+# mypy>=1.9
+
+# Системные утилиты — НЕ pip-пакеты, устанавливаются через apt:
+# sudo apt install xdotool xprintidle xclip alsa-utils
