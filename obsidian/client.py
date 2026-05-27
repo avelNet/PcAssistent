@@ -379,12 +379,17 @@ class ObsidianClient:
                 continue
             lines += [f"## {heading}", ""]
             for task in group:
-                task_id = task.get("id", "")
-                title   = task.get("title", "")
-                desc    = task.get("description", "")
-                id_tag  = f" <!-- id:{task_id} -->" if task_id else ""
-                lines.append(f"- [ ] {title}{id_tag}")
-                if desc:
+                task_id  = task.get("id", "")
+                title    = task.get("title", "")
+                desc     = task.get("description", "")
+                done     = task.get("done", False)
+                done_by  = task.get("done_by", "")
+                id_tag   = f" <!-- id:{task_id} -->" if task_id else ""
+                # Атрибуция авто-выполнения: <!-- ✓ ассистент -->
+                auto_tag = f" <!-- ✓ {done_by} -->" if (done and done_by) else ""
+                checkbox = "x" if done else " "
+                lines.append(f"- [{checkbox}] {title}{id_tag}{auto_tag}")
+                if desc and not done:  # описание только для невыполненных
                     lines.append(f"  > _{desc}_")
             lines.append("")
 

@@ -106,6 +106,33 @@ async def notify_error(message: str) -> None:
     )
 
 
+async def notify_check_task(task_title: str, delay_min: int = 30) -> None:
+    """
+    Напоминание: похоже задача выполнена — проверь и отметь.
+    Отправляется немедленно, авто-завершение через delay_min минут.
+    """
+    await notify(
+        "⏳ Похоже это уже готово",
+        f"{_short(task_title)}\n"
+        f"Отметь в Obsidian, или через {delay_min} мин отмечу сам",
+        urgency="normal",
+        timeout_ms=15000,
+        icon="dialog-question",
+    )
+
+
+async def notify_auto_completed(task_title: str) -> None:
+    """Уведомление: задача автоматически отмечена ассистентом."""
+    await notify(
+        "✅ Задача отмечена ассистентом",
+        f"{_short(task_title)}\n"
+        "Можешь отменить — просто сними галочку в Obsidian",
+        urgency="normal",
+        timeout_ms=12000,
+        icon="emblem-default",
+    )
+
+
 # ─── Открытие Obsidian на втором мониторе ────────────────────────────────────
 
 async def open_obsidian_note(fs_path: str | Path) -> None:

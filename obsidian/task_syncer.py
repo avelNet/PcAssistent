@@ -12,6 +12,7 @@ Obsidian → SQLite:
 
 import asyncio
 import logging
+import re
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
@@ -22,6 +23,26 @@ if TYPE_CHECKING:
     from core.event_bus import EventBus
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_done_state(content: str) -> dict[str, dict]:
+    """
+    Парсит выполненные задачи из markdown.
+    Возвращает: {task_id: {"done_by": str}} для всех [x] задач с id.
+    Сохраняет и атрибуцию ассистента если есть <!-- ✓ ... -->.
+    """
+    result = {}
+    for line in content.splitlines():
+        m = re.match(
+            r'\s*-\s+\[x\]\s+.+<!--\s+id:([^>]+?)\s+-->'
+            r'(?:\s+<!--\s+✓\s+([^>]+?)\s+-->)?',
+            line,
+        )
+        if m:
+            task_id = m.group(1).strip()
+            done_by = (m.group(2) or "").strip()
+            result[task_id] = {"done_by": done_by}
+    return result
 
 # Триггеры где создаём новую дейли (а не дозаписываем)
 _MORNING_TRIGGERS = {
@@ -108,12 +129,13 @@ class TaskSyncer:
         """
         Тихая запись задач для фонового проекта.
         Без уведомлений, без открытия Obsidian — только файл.
+        Сохраняет уже выполненные [x] задачи если они были отмечены ранее.
         """
         if not data or not self.client.enabled:
             return
 
-        tasks   = data.get("tasks", [])
-        project = data.get("project")
+        tasks    = data.get("tasks", [])
+        project  = data.get("project")
         prologue = data.get("prologue", "")
 
         if not tasks or not project:
@@ -122,20 +144,42 @@ class TaskSyncer:
         if not self.client.shared_root:
             return
 
-        from pathlib import Path as _Path
         fs_path = self.client.daily_path_fs(project)
+
+        # ── Слияние: сохраняем выполненные задачи из существующего файла ──
+        # Если пользователь (или ассистент) уже отметил задачу [x] — не теряем.
+        done_state: dict[str, dict] = {}
+        if fs_path.exists():
+            try:
+                existing = await asyncio.to_thread(fs_path.read_text, "utf-8")
+                done_state = _parse_done_state(existing)
+                if done_state:
+                    logger.debug(
+                        "TaskSyncer[bg]: '%s' — сохраняем %d выполненных задач",
+                        project, len(done_state)
+                    )
+            except Exception as e:
+                logger.debug("TaskSyncer[bg]: не удалось прочитать существующий файл: %s", e)
+
+        # Применяем preserved done-статус к задачам от LLM
+        if done_state:
+            for task in tasks:
+                tid = task.get("id", "")
+                if tid in done_state:
+                    task["done"] = True
+                    task["done_by"] = done_state[tid].get("done_by", "")
+
         content = self.client._build_task_list(tasks, prologue, project)
 
         def _write():
             fs_path.parent.mkdir(parents=True, exist_ok=True)
-            # Перезаписываем фоновые заметки — они не открыты пользователем
             fs_path.write_text(content, encoding="utf-8")
 
-        import asyncio as _aio
-        await _aio.to_thread(_write)
+        await asyncio.to_thread(_write)
+        done_count = sum(1 for t in tasks if t.get("done"))
         logger.info(
-            "TaskSyncer[bg]: '%s' → %d задач (без уведомления)",
-            project, len(tasks),
+            "TaskSyncer[bg]: '%s' → %d задач (%d выполнено сохранено, без уведомления)",
+            project, len(tasks), done_count,
         )
 
     # ─── Obsidian → SQLite ───────────────────────────────────────────────────

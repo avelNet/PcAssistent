@@ -13,6 +13,7 @@ obsidian/project_writer.py — ведение документации прое�
 
 import asyncio
 import logging
+import re
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
@@ -225,6 +226,80 @@ class ProjectWriter:
 
         await asyncio.to_thread(_write)
         logger.debug("ProjectWriter: Dev Log/%s.md обновлён", today)
+
+    # ─── Авто-завершение задач ───────────────────────────────────────────────
+
+    async def auto_complete_task_fs(
+        self,
+        task_id: str,
+        project: str,
+        done_by: str = "ассистент",
+    ) -> bool:
+        """
+        Пометить задачу как выполненную напрямую в FS-файле.
+        Изменяет [ ] → [x] и добавляет <!-- ✓ {done_by} HH:MM -->.
+        Возвращает True если задача найдена и обновлена, False если уже выполнена или не найдена.
+        """
+        if not self.shared_root or not project or not task_id:
+            return False
+
+        daily = self.shared_root / project / "Daily" / f"{_today_str()}.md"
+        if not daily.exists():
+            return False
+
+        def _update() -> bool:
+            content = daily.read_text(encoding="utf-8")
+            lines = content.splitlines()
+            changed = False
+            now_str = datetime.now().strftime("%H:%M")
+
+            for i, line in enumerate(lines):
+                # Ищем незавершённую задачу с нашим id
+                if f"id:{task_id}" not in line:
+                    continue
+                if "- [x]" in line:
+                    return False  # уже выполнена — не трогаем
+                if "- [ ]" in line:
+                    # Убираем старый id-тег, добавляем x и двойную атрибуцию
+                    new_line = line.replace("- [ ]", "- [x]", 1)
+                    # Добавляем атрибуцию после id-тега
+                    new_line = re.sub(
+                        r'(<!--\s+id:[^>]+-->)',
+                        rf'\1 <!-- ✓ {done_by} {now_str} -->',
+                        new_line,
+                    )
+                    lines[i] = new_line
+                    changed = True
+                    break
+
+            if changed:
+                daily.write_text("\n".join(lines), encoding="utf-8")
+            return changed
+
+        result = await asyncio.to_thread(_update)
+        if result:
+            logger.info(
+                "ProjectWriter: задача '%s' → [x] (помечена: %s)", task_id, done_by
+            )
+        return result
+
+    async def is_task_done_in_obsidian(self, task_id: str, project: str) -> bool:
+        """Проверить отмечена ли задача в Obsidian-файле."""
+        if not self.shared_root or not project or not task_id:
+            return False
+
+        daily = self.shared_root / project / "Daily" / f"{_today_str()}.md"
+        if not daily.exists():
+            return False
+
+        def _check():
+            content = daily.read_text(encoding="utf-8")
+            for line in content.splitlines():
+                if f"id:{task_id}" in line and "- [x]" in line:
+                    return True
+            return False
+
+        return await asyncio.to_thread(_check)
 
     # ─── Генераторы контента ─────────────────────────────────────────────────
 

@@ -302,7 +302,15 @@ class TriggerEngine:
             from core.notifier import notify_tasks
             await notify_tasks(tasks, prologue=prologue, trigger=trigger)
 
-            # 13. Логируем результат
+            # 13. Детектируем возможно-выполненные задачи и планируем авто-завершение
+            possibly_done = self._find_possibly_done_tasks(tasks, context)
+            for pd_task in possibly_done:
+                asyncio.create_task(
+                    self._schedule_auto_complete(pd_task, current_focus, delay_min=30),
+                    name=f"auto_complete_{pd_task.get('id', '')[:8]}",
+                )
+
+            # 14. Логируем результат
             logger.info("TriggerEngine: LLM завершён за %.1fс, задач=%d", duration, len(tasks))
             logger.info("\n%s", task_parser.format_tasks_for_display(tasks))
             logger.info("═" * 50)
@@ -400,6 +408,119 @@ class TriggerEngine:
 
         except Exception as e:
             logger.debug("TriggerEngine[bg]: '%s' ошибка: %s", project, e)
+
+    # ─── Авто-завершение задач ───────────────────────────────────────────────
+
+    def _find_possibly_done_tasks(
+        self, tasks: list[dict], context: dict
+    ) -> list[dict]:
+        """
+        Найти задачи которые скорее всего уже выполнены.
+        Критерий: 2+ значимых слова из заголовка задачи встречаются в
+        последних git-коммитах.
+
+        Возвращает список незавершённых задач-кандидатов.
+        """
+        # Собираем все строки коммитов из git-снапшотов
+        commit_lines: list[str] = []
+        for repo in context.get("git", []):
+            log = repo.get("recent_log", "")
+            if log:
+                commit_lines.extend(log.lower().splitlines())
+
+        if not commit_lines:
+            return []
+
+        # Стоп-слова которые не считаем значимыми
+        _STOPWORDS = {
+            "что", "для", "это", "при", "как", "все", "или", "если", "ещё",
+            "уже", "из", "по", "на", "не", "в", "и", "с", "то", "же",
+            "the", "and", "for", "with", "from", "that", "this", "are", "was",
+            "feat", "fix", "docs", "chore", "refactor", "add", "update", "remove",
+        }
+
+        possibly_done = []
+        for task in tasks:
+            if task.get("done"):
+                continue
+
+            title = task.get("title", "").lower()
+            # Значимые токены: слова длиннее 3 символов, не стоп-слова
+            tokens = {
+                w for w in re.findall(r'[a-zа-яё]{4,}', title)
+                if w not in _STOPWORDS
+            }
+            if len(tokens) < 2:
+                continue
+
+            # Сколько токенов встречается в коммитах
+            matched = sum(
+                1 for t in tokens
+                if any(t in line for line in commit_lines)
+            )
+            # Порог: 2+ совпадения ИЛИ более половины токенов
+            if matched >= 2 or (tokens and matched / len(tokens) >= 0.5):
+                logger.debug(
+                    "TriggerEngine: возможно выполнено (%d токенов) — '%s'",
+                    matched, task.get("title")
+                )
+                possibly_done.append(task)
+
+        return possibly_done
+
+    async def _schedule_auto_complete(
+        self,
+        task: dict,
+        project: str | None,
+        delay_min: int = 30,
+    ) -> None:
+        """
+        Напомнить пользователю об незакрытой задаче, затем через delay_min минут
+        автоматически отметить её как выполненную (если пользователь не сделал сам).
+        """
+        task_id    = task.get("id", "")
+        task_title = task.get("title", "")
+
+        if not task_id:
+            return
+
+        # Сразу отправляем напоминание
+        from core.notifier import notify_check_task
+        await notify_check_task(task_title, delay_min=delay_min)
+
+        # Ждём
+        await asyncio.sleep(delay_min * 60)
+
+        # Перепроверяем — пользователь мог уже отметить сам
+        already_done = await self._project_writer.is_task_done_in_obsidian(
+            task_id, project or ""
+        )
+        if already_done:
+            logger.info(
+                "TriggerEngine: задача '%s' уже отмечена пользователем — авто-завершение отменено",
+                task_title
+            )
+            return
+
+        # Автоматически помечаем
+        marked = await self._project_writer.auto_complete_task_fs(
+            task_id=task_id,
+            project=project or "",
+            done_by="ассистент",
+        )
+
+        if marked:
+            # Обновляем SQLite
+            from storage import context_store as cs
+            await cs.update_tasks_from_obsidian([{"id": task_id, "done": True}])
+
+            # Уведомляем пользователя
+            from core.notifier import notify_auto_completed
+            await notify_auto_completed(task_title)
+
+            logger.info(
+                "TriggerEngine: задача '%s' авто-завершена ассистентом", task_title
+            )
 
     # ─── Публичные методы ────────────────────────────────────────────────────
 
