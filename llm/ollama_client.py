@@ -32,7 +32,7 @@ class OllamaClient:
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            timeout = aiohttp.ClientTimeout(total=300)  # 5 мин макс
+            timeout = aiohttp.ClientTimeout(total=900)  # 15 мин — запас для CPU-only
             self._session = aiohttp.ClientSession(timeout=timeout)
         return self._session
 
