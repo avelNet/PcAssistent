@@ -108,8 +108,8 @@ class ContextBuilder:
         """Список всех известных проектов из GitWatcher."""
         if not self.git_watcher:
             return []
-        snap = await self.git_watcher.get_snapshot()
-        return [r["name"] for r in snap.get("repos", []) if r.get("name")]
+        snapshots = await self.git_watcher.get_all_snapshots()
+        return [s["name"] for s in snapshots if s.get("name")]
 
     # ─── Источники ──────────────────────────────────────────────────────────
 
