@@ -11,6 +11,7 @@ import logging
 import re
 import ssl
 from datetime import date, datetime
+from pathlib import Path
 from typing import Optional
 
 import aiohttp
@@ -41,6 +42,12 @@ class ObsidianClient:
         self.host: str         = obs_cfg.get("host", "https://127.0.0.1:27124").rstrip("/")
         self.daily_folder: str = obs_cfg.get("daily_folder", "Daily")
         self.auto_open: bool   = obs_cfg.get("auto_open", True)
+
+        # Общий vault для всех проектов — запись напрямую в ФС (без REST API).
+        # Структура: {shared_root}/{project}/Daily/DD.MM.YYYY.md
+        shared = obs_cfg.get("shared_root", "")
+        self.shared_root: Optional[Path] = Path(shared).expanduser() if shared else None
+
         self._session: Optional[aiohttp.ClientSession] = None
 
         # Плагин использует self-signed сертификат — отключаем проверку (локально безопасно)
@@ -282,6 +289,61 @@ class ObsidianClient:
             return f"{project}/{self.daily_folder}/{today}.md"
         return f"{self.daily_folder}/{today}.md"
 
+    def daily_path_fs(self, project: Optional[str] = None) -> Path:
+        """
+        Абсолютный путь в shared_root для прямой записи на ФС.
+        shared_root/{project}/Daily/DD.MM.YYYY.md
+        """
+        assert self.shared_root is not None
+        today = date.today().strftime("%d.%m.%Y")
+        if project:
+            return self.shared_root / project / self.daily_folder / f"{today}.md"
+        return self.shared_root / self.daily_folder / f"{today}.md"
+
+    # ─── Прямая запись в ФС (shared_root) ───────────────────────────────────
+
+    async def write_note_fs(
+        self, path: Path, content: str, *, open_after: bool = True
+    ) -> bool:
+        """
+        Записать заметку напрямую в файловую систему (для shared_root vault).
+        Создаёт папки по пути, не перезаписывает если файл уже существует.
+        """
+        def _do():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists():
+                return False  # не перезаписываем
+            path.write_text(content, encoding="utf-8")
+            return True
+
+        created = await asyncio.to_thread(_do)
+        if created:
+            logger.info("obsidian[fs]: записано '%s' (%d байт)", path, len(content.encode()))
+        else:
+            logger.info("obsidian[fs]: '%s' уже существует — пропускаем", path)
+
+        if open_after and self.auto_open:
+            # Открываем vault-папку (не конкретный файл — REST API другого vault'а)
+            # Просто пишем уведомление пользователю
+            from core.notifier import notify
+            await notify(
+                "Задачи записаны",
+                f"Obsidian → {path.parent.name}/{path.name}",
+            )
+        return True
+
+    async def append_note_fs(self, path: Path, content: str) -> bool:
+        """Дозаписать секцию в конец файла (для вечернего итога)."""
+        def _do():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(content)
+            return True
+
+        await asyncio.to_thread(_do)
+        logger.info("obsidian[fs]: дозаписано в '%s'", path)
+        return True
+
     # ─── Форматирование заметок ──────────────────────────────────────────────
 
     def _build_task_list(
@@ -375,15 +437,24 @@ class ObsidianClient:
     ) -> Optional[str]:
         """
         Создать дейли заметку с задачами.
-        Если уже существует — не перезаписывает, только открывает.
-        Возвращает путь к заметке или None при ошибке.
+        Если shared_root задан — пишем напрямую в ФС (изолированный vault проекта).
+        Иначе — через REST API активного vault.
+        Не перезаписывает, если файл уже существует.
+        Возвращает строковый путь к заметке или None при ошибке.
         """
         if not self.enabled:
             return None
 
-        path = self.daily_path(project)
+        content = self._build_task_list(tasks, prologue, project)
 
-        # Проверяем существование (§9.3 Правило 3 — дозаписывать не перезаписывать)
+        # ─── Режим ФС: shared_root настроен ─────────────────────────────────
+        if self.shared_root:
+            fs_path = self.daily_path_fs(project)
+            await self.write_note_fs(fs_path, content, open_after=True)
+            return str(fs_path)
+
+        # ─── Режим REST API ──────────────────────────────────────────────────
+        path = self.daily_path(project)
         existing = await self.read_note(path)
         if existing is not None:
             logger.info("obsidian: '%s' уже существует — открываю без перезаписи", path)
@@ -391,7 +462,6 @@ class ObsidianClient:
                 await self.open_on_second_monitor(path)
             return path
 
-        content = self._build_task_list(tasks, prologue, project)
         ok = await self.write_note(path, content, open_after=True)
         return path if ok else None
 
@@ -408,8 +478,14 @@ class ObsidianClient:
         if not self.enabled:
             return None
 
-        path = self.daily_path(project)
         content = self._build_evening_summary(tasks, prologue)
+
+        if self.shared_root:
+            fs_path = self.daily_path_fs(project)
+            await self.append_note_fs(fs_path, content)
+            return str(fs_path)
+
+        path = self.daily_path(project)
         ok = await self.append_note(path, content, open_after=True)
         return path if ok else None
 
@@ -424,8 +500,17 @@ class ObsidianClient:
         if not self.enabled:
             return []
 
-        path = self.daily_path(project)
-        content = await self.read_note(path)
+        # Режим ФС — читаем файл напрямую
+        if self.shared_root:
+            fs_path = self.daily_path_fs(project)
+            try:
+                content = await asyncio.to_thread(fs_path.read_text, "utf-8") if fs_path.exists() else ""
+            except Exception:
+                content = ""
+        else:
+            path = self.daily_path(project)
+            content = await self.read_note(path) or ""
+
         if not content:
             return []
 

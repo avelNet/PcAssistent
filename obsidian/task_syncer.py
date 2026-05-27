@@ -83,20 +83,9 @@ class TaskSyncer:
             by_project.setdefault(proj, []).append(task)
 
         for project, proj_tasks in by_project.items():
-            # Используем подпапку проекта только если она реально есть в vault.
-            # Иначе — корневая Daily/ (не создаём папки чужих проектов в vault).
-            vault_project: Optional[str] = None
-            if project and await self.client.project_exists_in_vault(project):
-                vault_project = project
-            elif project:
-                logger.debug(
-                    "TaskSyncer: папка '%s' не найдена в vault → пишем в Daily/",
-                    project,
-                )
-
             if trigger == "evening_summary":
                 path = await self.client.append_evening_summary(
-                    proj_tasks, prologue=prologue, project=vault_project
+                    proj_tasks, prologue=prologue, project=project
                 )
                 if path:
                     logger.info(
@@ -104,7 +93,7 @@ class TaskSyncer:
                     )
             else:
                 path = await self.client.create_daily_note(
-                    proj_tasks, prologue=prologue, project=vault_project
+                    proj_tasks, prologue=prologue, project=project
                 )
                 if path:
                     logger.info(
@@ -194,7 +183,12 @@ class TaskSyncer:
         if not self.client.enabled:
             return 0
 
-        obsidian_tasks = await self.client.get_today_tasks(project)
+        try:
+            obsidian_tasks = await self.client.get_today_tasks(project)
+        except Exception as e:
+            logger.debug("TaskSyncer: sync_from_obsidian ошибка чтения: %s", e)
+            return 0
+
         our_tasks = [t for t in obsidian_tasks if t.get("id")]
 
         if our_tasks:

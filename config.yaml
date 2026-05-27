@@ -57,10 +57,16 @@ collectors:
 obsidian:
   enabled: true
   api_key: "7fe2107b9e090577268261969ea9cab80a24bafb415a5f32b94e72c57873737c"
-  root: "/home/pavel/Obsidian/Tap2Go Vault"  # корень vault-а
-  daily_folder: "Daily"         # папка с дневными заметками внутри каждого vault
-  auto_open: true
   host: "https://127.0.0.1:27124"
+
+  # Общий vault для задач всех проектов — прямая запись в ФС.
+  # Структура: ~/Obsidian/{ProjectName}/Daily/DD.MM.YYYY.md
+  # Открой ~/Obsidian/ как отдельный vault в Obsidian чтобы видеть все проекты.
+  shared_root: "~/Obsidian"
+
+  root: "/home/pavel/Tap2Go"    # активный Tap2Go vault (для inotify watcher)
+  daily_folder: "Daily"         # папка с дневными заметками
+  auto_open: true
 
   # Папки которые НЕ читаем как контекст (служебные)
   skip_folders:
