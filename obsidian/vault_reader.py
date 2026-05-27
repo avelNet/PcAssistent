@@ -19,6 +19,7 @@ inotify без перезапуска.
 
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -201,3 +202,122 @@ class VaultReader:
                 lines.append(f"  - {rel} ({age})")
 
         return "\n".join(lines)
+
+    def parse_kanban(self) -> dict:
+        """
+        Найти и распарсить все канбан-доски в vault'е.
+        Возвращает статус задач по колонкам.
+
+        Формат Obsidian Kanban plugin:
+            ## 🔄 В работе
+            - [ ] [[Services/Service 01|Сервис 01]]
+        """
+        kanban_files = []
+        if not self.root.exists():
+            return {}
+
+        # Ищем файлы с kanban-plugin в frontmatter
+        for md_file in self.root.rglob("*.md"):
+            if any(p in self.skip_folders for p in md_file.parts):
+                continue
+            try:
+                with open(md_file, encoding="utf-8", errors="replace") as f:
+                    head = f.read(200)
+                if "kanban-plugin" in head:
+                    kanban_files.append(md_file)
+            except OSError:
+                pass
+
+        if not kanban_files:
+            return {}
+
+        result = {}
+        for kb_file in kanban_files:
+            project = kb_file.parent.parent.name  # vault name
+            parsed = self._parse_kanban_file(kb_file)
+            if parsed:
+                result[project] = parsed
+                logger.info(
+                    "VaultReader: канбан '%s' — в работе: %d, не начато: %d, готово: %d",
+                    kb_file.name,
+                    len(parsed.get("in_progress", [])),
+                    len(parsed.get("not_started", [])),
+                    len(parsed.get("done", [])),
+                )
+        return result
+
+    def _parse_kanban_file(self, path: Path) -> dict:
+        """Парсит одну канбан-доску. Возвращает словарь с колонками."""
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return {}
+
+        # Паттерн: ## Заголовок колонки
+        section_re = re.compile(r"^##\s+(.+)$", re.MULTILINE)
+        # Паттерн: - [ ] или - [x] с wiki-ссылкой или обычным текстом
+        item_re = re.compile(r"^\s*-\s+\[([xX ]?)\]\s+(?:\[\[(?:[^\]|]+)(?:\|([^\]]+))?\]\]|(.+))$", re.MULTILINE)
+
+        # Определяем смысл колонки по ключевым словам
+        def classify_column(header: str) -> str:
+            h = header.lower()
+            if any(w in h for w in ["в работе", "in progress", "doing", "🔄"]):
+                return "in_progress"
+            if any(w in h for w in ["готово", "done", "завершено", "✅", "complete"]):
+                return "done"
+            if any(w in h for w in ["не начат", "todo", "backlog", "📋", "to do"]):
+                return "not_started"
+            return "other"
+
+        columns: dict[str, list[str]] = {
+            "in_progress": [],
+            "not_started": [],
+            "done": [],
+            "other": [],
+        }
+
+        # Разбиваем контент по секциям
+        sections = section_re.split(content)
+        # sections: [pre, header1, body1, header2, body2, ...]
+        i = 1
+        while i < len(sections) - 1:
+            header = sections[i].strip()
+            body = sections[i + 1]
+            col_type = classify_column(header)
+
+            for m in item_re.finditer(body):
+                # Извлекаем отображаемое имя: либо alias wiki-ссылки, либо обычный текст
+                display = (m.group(2) or m.group(3) or "").strip()
+                if display and not display.startswith("%%"):
+                    columns[col_type].append(display)
+            i += 2
+
+        return {k: v for k, v in columns.items() if v}
+
+    def build_context(self) -> dict:
+        """Собрать полный контекст для LLM: заметки + статус канбана."""
+        index = self.scan()
+        kanban = self.parse_kanban()
+
+        projects_context = {}
+        for project_name, notes in index.projects.items():
+            project_notes = []
+            for note in sorted(notes, key=lambda n: n.modified_at, reverse=True):
+                content = self.read_content(note)
+                if not content.strip():
+                    continue
+                project_notes.append({
+                    "path": note.relative_path,
+                    "modified_days_ago": round((time.time() - note.modified_at) / 86400, 1),
+                    "size_kb": round(note.size_bytes / 1024, 1),
+                    "content": content,
+                })
+            if project_notes:
+                projects_context[project_name] = project_notes
+
+        return {
+            "projects": projects_context,
+            "kanban": kanban,
+            "total_notes": index.total_notes,
+            "vault_root": str(self.root),
+        }

@@ -37,6 +37,11 @@ TASK: Обновить README | LOW | PcAssistent | Добавить разде�
 - Каждая задача начинается точно со слова TASK: (с большой буквы, двоеточие обязательно)
 - Пиши только на русском языке
 - Не используй markdown заголовки (###) внутри задач
+
+ПРАВИЛО ПРИОРИТЕТОВ (очень важно):
+Если в контексте есть канбан-доска или статус проекта — строго соблюдай его.
+НЕ предлагай задачи по пунктам со статусом "Не начат" пока есть незавершённые "В работе".
+Сначала доделай текущее, потом берись за новое.
 """
 
 # ─── Шаблоны промптов по триггерам ──────────────────────────────────────────
@@ -70,6 +75,7 @@ def _morning_briefing(ctx: dict) -> str:
     today = date.today().strftime("%d %B %Y")
     parts = [f"📅 Утренний брифинг — {today}\n"]
 
+    parts.append(_section_kanban(ctx))
     parts.append(_section_obsidian(ctx))
     parts.append(_section_git(ctx))
     parts.append(_section_errors(ctx))
@@ -110,6 +116,7 @@ def _user_returned(ctx: dict) -> str:
 
     parts = [f"👋 Возвращение после перерыва ({idle_str})\n"]
 
+    parts.append(_section_kanban(ctx))
     parts.append(_section_obsidian(ctx))
     parts.append(_section_git(ctx))
     parts.append(_section_ide(ctx))
@@ -162,6 +169,7 @@ def _manual(ctx: dict) -> str:
     today = date.today().strftime("%d %B %Y")
     parts = [f"🔍 Полный анализ — {today}\n"]
 
+    parts.append(_section_kanban(ctx))
     parts.append(_section_obsidian(ctx))
     parts.append(_section_git(ctx))
     parts.append(_section_ide(ctx))
@@ -301,12 +309,52 @@ def _section_history(ctx: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _section_kanban(ctx: dict) -> str:
+    """Статус проектов из канбан-досок — всегда идёт первым."""
+    kanban = ctx.get("obsidian", {}).get("kanban", {})
+    if not kanban:
+        return ""
+
+    lines = ["## 📋 Статус проектов (Kanban)"]
+    lines.append("⚠️ Генерируй задачи ТОЛЬКО для пунктов со статусом 'В работе'!\n")
+
+    for project, columns in kanban.items():
+        lines.append(f"### {project}")
+
+        in_progress = columns.get("in_progress", [])
+        not_started = columns.get("not_started", [])
+        done = columns.get("done", [])
+
+        if in_progress:
+            lines.append("🔄 В работе (фокус задач сюда):")
+            for item in in_progress:
+                lines.append(f"  - {item}")
+
+        if done:
+            lines.append("✅ Готово:")
+            for item in done:
+                lines.append(f"  - {item}")
+
+        if not_started:
+            lines.append(f"📋 Не начато (не предлагать пока есть незавершённое): {len(not_started)} пунктов")
+
+    return "\n".join(lines) + "\n"
+
+
 def _section_obsidian(ctx: dict) -> str:
-    """Заметки из Obsidian vault — все проекты."""
+    """Заметки из Obsidian vault — только по проектам 'В работе'."""
     obsidian = ctx.get("obsidian", {})
     projects = obsidian.get("projects", {})
+    kanban = obsidian.get("kanban", {})
     if not projects:
         return ""
+
+    # Определяем что сейчас "в работе" по канбану
+    in_progress_items: set[str] = set()
+    for cols in kanban.values():
+        for item in cols.get("in_progress", []):
+            # Нормализуем: "Сервис 01 — Инфраструктура" → ищем похожие пути
+            in_progress_items.add(item.lower())
 
     lines = ["## Obsidian — заметки по проектам"]
 
@@ -314,11 +362,21 @@ def _section_obsidian(ctx: dict) -> str:
         lines.append(f"\n### 📁 {project_name}")
         for note in notes:
             path = note.get("path", "")
-            # Убираем название проекта из пути для читаемости
             short_path = path.replace(f"{project_name}/", "", 1)
             days_ago = note.get("modified_days_ago", 0)
             age = "сегодня" if days_ago < 1 else f"{int(days_ago)}д назад"
-            lines.append(f"\n#### {short_path} ({age})")
+
+            # Если есть канбан — помечаем статус заметки
+            status_tag = ""
+            if in_progress_items:
+                note_name = Path(short_path).stem.lower()
+                is_wip = any(
+                    note_name in item or item in note_name
+                    for item in in_progress_items
+                )
+                status_tag = " [🔄 В РАБОТЕ]" if is_wip else " [📋 не начато]"
+
+            lines.append(f"\n#### {short_path} ({age}){status_tag}")
             content = note.get("content", "").strip()
             if content:
                 lines.append(content)
