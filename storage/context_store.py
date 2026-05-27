@@ -102,6 +102,43 @@ async def get_all_recent(hours: int = 48) -> list[dict]:
 
 # ─── Задачи ─────────────────────────────────────────────────────────────────
 
+async def replace_today_tasks(tasks: list[dict]) -> None:
+    """
+    Заменить все незавершённые задачи за сегодня новым набором.
+    Завершённые (done=1) задачи НЕ трогаем — пользователь мог их отметить.
+    Вызывать вместо save_tasks при каждом запуске LLM.
+    """
+    today = date.today().isoformat()
+
+    def _do():
+        conn = _conn()
+        # Удаляем только незавершённые задачи за сегодня
+        conn.execute("DELETE FROM tasks WHERE date=? AND done=0", (today,))
+        for t in tasks:
+            conn.execute(
+                """
+                INSERT INTO tasks
+                    (id, title, priority, project, description, done, created_at, done_at, date)
+                VALUES (?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    t["id"],
+                    t["title"],
+                    t["priority"],
+                    t.get("project"),
+                    t.get("description"),
+                    int(t.get("done", False)),
+                    t.get("created_at", datetime.utcnow().isoformat()),
+                    t.get("done_at"),
+                    t.get("date", today),
+                ),
+            )
+        conn.commit()
+
+    await _run_write(_do)
+    logger.info("context_store: задачи за сегодня заменены (%d новых)", len(tasks))
+
+
 async def save_tasks(tasks: list[dict]) -> None:
     """Сохранить список задач (INSERT OR REPLACE)."""
     def _do():

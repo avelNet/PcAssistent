@@ -239,9 +239,9 @@ class TriggerEngine:
                 tasks = _filter_tasks_by_kanban(tasks, kanban)
                 logger.info("TriggerEngine: после канбан-фильтра задач=%d", len(tasks))
 
-            # 7. Сохраняем задачи в БД
+            # 7. Заменяем задачи за сегодня (не накапливаем — каждый запуск свежий список)
             if tasks:
-                await context_store.save_tasks(tasks)
+                await context_store.replace_today_tasks(tasks)
 
             # 8. Сохраняем статистику запуска
             duration = time.monotonic() - start
@@ -257,15 +257,7 @@ class TriggerEngine:
             self._last_run_ts = time.time()
             self._last_context_hash = context_hash
 
-            # 10. Desktop-уведомление + голос (если voice=True)
-            from core.notifier import notify_tasks
-            from voice.speech_output import SpeechOutput
-            await notify_tasks(tasks, prologue=prologue, trigger=trigger)
-            if voice:
-                sp = SpeechOutput(self._full_config)
-                await sp.speak_tasks(tasks, prologue=prologue, trigger=trigger)
-
-            # 11. Уведомляем систему
+            # 10. Уведомляем систему → TaskSyncer запишет в Obsidian
             await self.bus.emit("llm.completed", {
                 "tasks": tasks,
                 "prologue": prologue,
@@ -273,8 +265,20 @@ class TriggerEngine:
                 "voice": voice,
                 "meta": meta,
             })
+            # Даём Obsidian-запись завершиться до старта TTS
+            await asyncio.sleep(0.5)
 
-            # 11. Логируем результат
+            # 11. Голос (после Obsidian — TTS занимает ~60с, не блокируем запись)
+            from voice.speech_output import SpeechOutput
+            if voice:
+                sp = SpeechOutput(self._full_config)
+                await sp.speak_tasks(tasks, prologue=prologue, trigger=trigger)
+
+            # 12. Desktop-уведомление — после TTS чтобы не перекрывать речь
+            from core.notifier import notify_tasks
+            await notify_tasks(tasks, prologue=prologue, trigger=trigger)
+
+            # 13. Логируем результат
             logger.info("TriggerEngine: LLM завершён за %.1fс, задач=%d", duration, len(tasks))
             logger.info("\n%s", task_parser.format_tasks_for_display(tasks))
             logger.info("═" * 50)

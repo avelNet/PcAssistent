@@ -4,7 +4,7 @@ prompt_engine.py — формирует промпты для LLM под каж�
 
 import json
 import logging
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -60,6 +60,30 @@ def build(trigger: str, context: dict) -> tuple[str, str]:
 
     builder = builders.get(trigger, _manual)
     user_prompt = builder(context)
+
+    # Добавляем текущее время в начало каждого промпта — LLM должен знать когда это
+    now = datetime.now()
+    _MONTHS_RU = {
+        1: "января", 2: "февраля", 3: "марта", 4: "апреля",
+        5: "мая",    6: "июня",    7: "июля",   8: "августа",
+        9: "сентября", 10: "октября", 11: "ноября", 12: "декабря",
+    }
+    weekdays_ru = ["понедельник","вторник","среда","четверг","пятница","суббота","воскресенье"]
+    time_str = now.strftime("%H:%M")
+    date_str = f"{now.day} {_MONTHS_RU[now.month]} {now.year}"
+    weekday_str = weekdays_ru[now.weekday()]
+    hour = now.hour
+    if 5 <= hour < 12:
+        time_of_day = "утро"
+    elif 12 <= hour < 17:
+        time_of_day = "день"
+    elif 17 <= hour < 22:
+        time_of_day = "вечер"
+    else:
+        time_of_day = "ночь"
+
+    time_header = f"🕐 Сейчас {time_str}, {weekday_str}, {date_str} ({time_of_day}).\n\n"
+    user_prompt = time_header + user_prompt
 
     # Сообщение от пользователя из консольного чата — идёт первым
     user_msg = context.get("user_message", "").strip()
