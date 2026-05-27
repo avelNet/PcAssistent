@@ -6,7 +6,7 @@ orchestrator.py — точка сборки системы.
 import asyncio
 import logging
 import signal
-from datetime import datetime, time as dt_time
+from datetime import datetime, timedelta, time as dt_time
 from pathlib import Path
 
 import yaml
@@ -153,6 +153,9 @@ class Orchestrator:
             git_watcher=self.git_watcher,
         )
 
+        # 4c. ProgressTracker — статистика задач за 7 дней (нужен до context_builder)
+        self.progress_tracker = ProgressTracker(days=7)
+
         # 5. Сборщик контекста
         self.context_builder = ContextBuilder(
             self.config,
@@ -160,6 +163,7 @@ class Orchestrator:
             clipboard_watcher=self.clipboard_watcher,
             jetbrains_watcher=self.jetbrains_watcher,
             stats_builder=self.stats_builder,
+            progress_tracker=self.progress_tracker,
         )
 
         # 6. TriggerEngine — подписывается на события
@@ -174,9 +178,6 @@ class Orchestrator:
         # 7b. Obsidian watcher (inotify на vault)
         self.obsidian_watcher = ObsidianWatcher(self.config, self.bus)
         await self.obsidian_watcher.start()
-
-        # 7c. ProgressTracker — статистика задач за 7 дней
-        self.progress_tracker = ProgressTracker(days=7)
 
         # 7d. UI трей
         self.tray_app = TrayApp(self.config, self.bus)
@@ -273,7 +274,7 @@ class Orchestrator:
                 target = now.replace(hour=3, minute=0, second=0, microsecond=0)
                 if now >= target:
                     # Уже прошли 03:00 сегодня — ждём завтра
-                    target = target.replace(day=target.day + 1)
+                    target += timedelta(days=1)
                 wait_sec = (target - now).total_seconds()
                 logger.debug("Следующая очистка БД через %.0f сек (в 03:00)", wait_sec)
                 await asyncio.sleep(wait_sec)

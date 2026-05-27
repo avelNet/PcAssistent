@@ -20,12 +20,14 @@ class ContextBuilder:
         clipboard_watcher=None,
         jetbrains_watcher=None,
         stats_builder=None,
+        progress_tracker=None,
     ):
         self.config = config
         self.git_watcher = git_watcher
         self.clipboard_watcher = clipboard_watcher
         self.jetbrains_watcher = jetbrains_watcher
         self.stats_builder = stats_builder
+        self.progress_tracker = progress_tracker
         self.ollama_num_ctx = config.get("ollama", {}).get("num_ctx", 8192)
 
         # Vault reader — инициализируем если папка существует
@@ -66,6 +68,7 @@ class ContextBuilder:
             "clipboard":    self._get_clipboard_context(),
             "ide":          self._get_jetbrains_context(),
             "productivity": self._get_productivity_context(),
+            "progress":     self._get_progress_context(),
         }
 
         results = await asyncio.gather(*tasks.values(), return_exceptions=True)
@@ -135,6 +138,16 @@ class ContextBuilder:
             return await self.stats_builder.build()
         except Exception as e:
             logger.debug("ContextBuilder: stats_builder ошибка — %s", e)
+            return {}
+
+    async def _get_progress_context(self) -> dict:
+        """Статистика выполнения задач за 7 дней (зависшие, заброшенные проекты)."""
+        if not self.progress_tracker:
+            return {}
+        try:
+            return await self.progress_tracker.build()
+        except Exception as e:
+            logger.debug("ContextBuilder: progress_tracker ошибка — %s", e)
             return {}
 
     async def _get_vault_context(self) -> dict:
