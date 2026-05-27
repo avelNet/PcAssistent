@@ -52,6 +52,56 @@ async def notify(
         logger.debug("notifier: ошибка — %s", e)
 
 
+def _notify_blocking(
+    title: str,
+    body: str,
+    obsidian_path: str | None,
+) -> bool:
+    """
+    Синхронная версия — запускается в отдельном потоке через asyncio.to_thread.
+    Использует gi.repository.Notify + GLib MainLoop для надёжного перехвата клика.
+    Возвращает True если пользователь кликнул на кнопку.
+    """
+    try:
+        import gi
+        gi.require_version("Notify", "0.7")
+        from gi.repository import Notify, GLib
+    except Exception as e:
+        logger.debug("notifier: gi.repository.Notify недоступен — %s", e)
+        return False
+
+    clicked = []
+
+    Notify.init("pc-assistant")
+    notif = Notify.Notification.new(title, body, "appointment-new")
+    notif.set_urgency(Notify.Urgency.CRITICAL)
+    notif.set_timeout(Notify.EXPIRES_NEVER)
+
+    loop = GLib.MainLoop()
+
+    def on_action(notification, action_name, user_data):
+        clicked.append(True)
+        loop.quit()
+
+    def on_closed(notification):
+        loop.quit()
+
+    notif.add_action("open", "Открыть Obsidian", on_action, None)
+    notif.connect("closed", on_closed)
+
+    try:
+        notif.show()
+    except Exception as e:
+        logger.debug("notifier: notif.show() ошибка — %s", e)
+        return False
+
+    # Таймаут 2 минуты — после этого просто закрываем
+    GLib.timeout_add_seconds(120, loop.quit)
+    loop.run()
+
+    return bool(clicked)
+
+
 async def notify_with_obsidian_action(
     title: str,
     body: str,
@@ -59,55 +109,45 @@ async def notify_with_obsidian_action(
 ) -> None:
     """
     Уведомление с кнопкой «Открыть Obsidian».
-    При клике — фокусирует Obsidian через gtk-launch (работает на Wayland).
+    При клике — открывает файл и фокусирует Obsidian (работает на Wayland).
     """
-    try:
-        cmd = [
-            "notify-send",
-            "--urgency", "normal",
-            "--expire-time", "15000",
-            "--icon", "appointment-new",
-            "--action", "open:Открыть Obsidian",
-            title,
-            body,
-        ]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        try:
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=20)
-            clicked = stdout.decode().strip() == "open"
-        except asyncio.TimeoutError:
-            proc.kill()
-            clicked = False
+    path_str = str(obsidian_path) if obsidian_path else None
 
-        if clicked:
-            # Открываем файл если передан путь, потом фокусируем
-            if obsidian_path:
-                import urllib.parse
-                encoded = urllib.parse.quote(str(obsidian_path), safe="")
-                uri_proc = await asyncio.create_subprocess_exec(
+    clicked = await asyncio.to_thread(_notify_blocking, title, body, path_str)
+
+    if clicked:
+        if path_str:
+            import urllib.parse
+            encoded = urllib.parse.quote(path_str, safe="")
+            try:
+                proc = await asyncio.create_subprocess_exec(
                     "xdg-open", f"obsidian://open?path={encoded}",
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
                 )
-                await asyncio.wait_for(uri_proc.wait(), timeout=5)
+                await asyncio.wait_for(proc.wait(), timeout=5)
                 await asyncio.sleep(0.8)
+            except Exception:
+                pass
 
-            # Фокусируем окно
-            await asyncio.create_subprocess_exec(
-                "gtk-launch", "obsidian_obsidian",
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            logger.info("notifier: пользователь кликнул → открываем Obsidian")
-
-    except FileNotFoundError:
-        logger.debug("notifier: notify-send не найден")
-    except Exception as e:
-        logger.debug("notifier: notify_with_obsidian_action ошибка — %s", e)
+        # Electron фокусирует уже открытый экземпляр при повторном запуске
+        for cmd in (
+            ["snap", "run", "obsidian"],
+            ["gtk-launch", "obsidian_obsidian"],
+            ["obsidian"],
+        ):
+            try:
+                await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                logger.info("notifier: фокус Obsidian через %s", cmd[0])
+                break
+            except FileNotFoundError:
+                continue
+            except Exception as e:
+                logger.debug("notifier: %s ошибка — %s", cmd[0], e)
 
 
 async def notify_tasks(tasks: list[dict], prologue: str = "", trigger: str = "") -> None:
