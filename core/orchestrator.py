@@ -22,14 +22,37 @@ logger = logging.getLogger(__name__)
 
 
 def load_config(config_path: str = "config.yaml") -> dict:
-    """Загрузить config.yaml."""
+    """
+    Загрузить config.yaml и опционально config.local.yaml.
+    config.local.yaml — для секретов (api_key и т.п.), он в .gitignore.
+    Значения из local переопределяют базовые (глубокий merge).
+    """
     path = Path(config_path)
     if not path.exists():
         raise FileNotFoundError(f"Конфиг не найден: {path.resolve()}")
     with open(path) as f:
-        config = yaml.safe_load(f)
-    logger.info("Конфиг загружен: %s", path.resolve())
+        config = yaml.safe_load(f) or {}
+
+    # Мержим config.local.yaml если есть
+    local_path = path.parent / "config.local.yaml"
+    if local_path.exists():
+        with open(local_path) as f:
+            local = yaml.safe_load(f) or {}
+        _deep_merge(config, local)
+        logger.info("Конфиг загружен: %s + %s", path.name, local_path.name)
+    else:
+        logger.info("Конфиг загружен: %s", path.resolve())
+
     return config
+
+
+def _deep_merge(base: dict, override: dict) -> None:
+    """Рекурсивно мержит override в base (изменяет base на месте)."""
+    for key, value in override.items():
+        if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = value
 
 
 class Orchestrator:
