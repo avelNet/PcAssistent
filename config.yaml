@@ -1,0 +1,84 @@
+ollama:
+  host: "http://localhost:11434"
+  model: "qwen2.5:14b"       # для слабых машин: qwen2.5:7b или mistral:7b
+  keep_alive: "10m"
+  num_ctx: 8192
+  num_predict: 1024
+  temperature: 0.3
+
+collectors:
+  git:
+    scan_dirs:
+      - "~/projects"
+      - "~/work"
+      - "~/Development"
+    max_depth: 3
+    max_repos: 30
+    debounce_sec: 2
+
+  jetbrains:
+    config_dir: "~/.config/JetBrains"
+
+  filesystem:
+    watch_dirs:
+      - "~/projects"
+      - "~/Development"
+    ignore:
+      - ".git"
+      - "__pycache__"
+      - "node_modules"
+      - ".venv"
+      - "target"
+      - ".idea"
+
+  process:
+    interval_sec: 60
+
+  clipboard:
+    interval_sec: 3
+    min_length: 20
+
+obsidian:
+  enabled: false                # включить когда установишь плагин Local REST API
+  api_key: "YOUR_KEY_HERE"
+  vault_path: "~/obsidian"
+  daily_folder: "Daily"
+  auto_open: true
+  host: "https://127.0.0.1:27124"
+
+voice:
+  enabled: false                # включить когда установишь piper-tts
+  engine: "piper"
+  model: "ru_RU-ruslan-medium"
+  model_dir: "~/.local/share/piper"
+  fallback_engine: "espeak-ng"
+
+trigger:
+  morning_hour: 9
+  evening_hour: 19
+  min_interval_hours: 2
+  work_session_min: 30
+  idle_trigger_hours: 2
+
+errors:
+  static_analysis: true
+  runtime_capture: false        # включить когда настроишь wrapper
+  spike_threshold: 5
+  spike_window_min: 60
+  debounce_sec: 30
+
+productivity:
+  deep_work_threshold_min: 15
+  focus_poll_sec: 30
+
+storage:
+  db_path: "~/.local/share/pc-assistant/db.sqlite"
+  ttl_days: 7
+
+ui:
+  tray_refresh_sec: 30
+  enabled: false                # включить когда установишь PyGObject
+
+logging:
+  level: "INFO"                 # DEBUG для разработки
+  file: "~/.local/share/pc-assistant/assistant.log"

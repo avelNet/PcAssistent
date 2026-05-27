@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""
+PC Assistant — точка входа.
+
+Использование:
+    python main.py                    # запуск сервиса
+    python main.py --trigger manual   # однократный ручной запуск LLM
+    python main.py --check            # проверка окружения (Ollama, зависимости)
+"""
+
+import argparse
+import asyncio
+import logging
+import signal
+import sys
+from pathlib import Path
+
+# Добавляем корень проекта в sys.path чтобы импорты работали
+sys.path.insert(0, str(Path(__file__).parent))
+
+from core.orchestrator import Orchestrator, load_config
+
+
+def setup_logging(config: dict) -> None:
+    log_cfg = config.get("logging", {})
+    level_name = log_cfg.get("level", "INFO")
+    level = getattr(logging, level_name.upper(), logging.INFO)
+
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+
+    log_file = log_cfg.get("file")
+    if log_file:
+        log_path = Path(log_file).expanduser()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(log_path))
+
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=handlers,
+    )
+
+    # Приглушаем шумные библиотеки
+    logging.getLogger("watchdog").setLevel(logging.WARNING)
+    logging.getLogger("aiohttp").setLevel(logging.WARNING)
+
+
+async def run_service(config: dict) -> None:
+    """Запустить как долгоживущий сервис."""
+    orchestrator = Orchestrator(config)
+    loop = asyncio.get_running_loop()
+
+    # Graceful shutdown по SIGTERM/SIGINT
+    stop_event = asyncio.Event()
+
+    def _signal_handler():
+        logging.getLogger(__name__).info("Получен сигнал остановки...")
+        stop_event.set()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, _signal_handler)
+
+    await orchestrator.start()
+    print("\n✅ PC Assistant запущен. Ctrl+C для остановки.\n")
+
+    await stop_event.wait()
+    await orchestrator.stop()
+
+
+async def run_trigger(config: dict, trigger: str) -> None:
+    """
+    Однократный запуск: инициализируем систему, запускаем LLM, выходим.
+    Удобно для тестирования без постоянного сервиса.
+    """
+    logger = logging.getLogger(__name__)
+    orchestrator = Orchestrator(config)
+    await orchestrator.start()
+
+    logger.info("Запускаю триггер: %s", trigger)
+    if orchestrator.trigger_engine:
+        await orchestrator.trigger_engine.trigger_manual()
+        # Даём время на завершение всех async задач
+        await asyncio.sleep(5)
+
+    await orchestrator.stop()
+
+
+async def run_check(config: dict) -> None:
+    """Проверить окружение: Ollama, модели, зависимости."""
+    from llm.ollama_client import OllamaClient
+    import importlib
+
+    print("\n🔍 Проверка окружения PC Assistant\n")
+    all_ok = True
+
+    # Python версия
+    py = sys.version_info
+    print(f"Python: {py.major}.{py.minor}.{py.micro}", "✓" if py >= (3, 11) else "⚠ (рекомендуется 3.11+)")
+
+    # Зависимости
+    deps = ["aiohttp", "watchdog", "psutil", "yaml"]
+    for dep in deps:
+        try:
+            importlib.import_module(dep)
+            print(f"  {dep}: ✓")
+        except ImportError:
+            print(f"  {dep}: ✗ — pip install {dep}")
+            all_ok = False
+
+    # Ollama
+    print("\nOllama:")
+    ollama = OllamaClient(config)
+    available = await ollama.check_availability()
+    if available:
+        print(f"  {config['ollama']['model']}: ✓")
+    else:
+        print(f"  ✗ Ollama недоступна или модель не установлена")
+        print(f"  Запусти: ollama serve && ollama pull {config['ollama']['model']}")
+        all_ok = False
+    await ollama.close()
+
+    # Директория БД
+    db_path = Path(config.get("storage", {}).get("db_path", "~/.local/share/pc-assistant/db.sqlite")).expanduser()
+    print(f"\nБД: {db_path}")
+    if db_path.parent.exists():
+        print("  директория: ✓")
+    else:
+        print("  директория будет создана при запуске")
+
+    # Git репозитории
+    print("\nGit репозитории:")
+    from collectors.git_watcher import GitWatcher
+    watcher = GitWatcher(config, None)
+    repos = await asyncio.to_thread(watcher._scan_repos)
+    if repos:
+        print(f"  найдено {len(repos)} репозиториев:")
+        for r in repos[:5]:
+            print(f"    {r}")
+        if len(repos) > 5:
+            print(f"    ...и ещё {len(repos) - 5}")
+    else:
+        print("  ⚠ репозитории не найдены — проверь collectors.git.scan_dirs в config.yaml")
+
+    print()
+    if all_ok:
+        print("✅ Всё готово к запуску!")
+    else:
+        print("❌ Есть проблемы — устрани их перед запуском")
+    print()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="PC Assistant — локальный AI ассистент")
+    parser.add_argument("--config", default="config.yaml", help="Путь к конфигу")
+    parser.add_argument("--trigger", help="Однократный запуск триггера (manual, morning_briefing, ...)")
+    parser.add_argument("--check", action="store_true", help="Проверить окружение")
+    parser.add_argument("--debug", action="store_true", help="DEBUG логирование")
+    args = parser.parse_args()
+
+    try:
+        config = load_config(args.config)
+    except FileNotFoundError as e:
+        print(f"Ошибка: {e}")
+        sys.exit(1)
+
+    if args.debug:
+        config.setdefault("logging", {})["level"] = "DEBUG"
+
+    setup_logging(config)
+    logger = logging.getLogger(__name__)
+    logger.info("PC Assistant стартует...")
+
+    try:
+        if args.check:
+            asyncio.run(run_check(config))
+        elif args.trigger:
+            asyncio.run(run_trigger(config, args.trigger))
+        else:
+            asyncio.run(run_service(config))
+    except KeyboardInterrupt:
+        print("\nОстановлено")
+
+
+if __name__ == "__main__":
+    main()

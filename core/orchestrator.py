@@ -1,0 +1,153 @@
+"""
+orchestrator.py — точка сборки системы.
+Инициализирует модули в правильном порядке, управляет lifecycle.
+"""
+
+import asyncio
+import logging
+import signal
+from datetime import datetime, time as dt_time
+from pathlib import Path
+
+import yaml
+
+from core.event_bus import EventBus
+from core.trigger_engine import TriggerEngine
+from collectors.git_watcher import GitWatcher
+from llm.context_builder import ContextBuilder
+from llm.ollama_client import OllamaClient
+from storage import db, context_store
+
+logger = logging.getLogger(__name__)
+
+
+def load_config(config_path: str = "config.yaml") -> dict:
+    """Загрузить config.yaml."""
+    path = Path(config_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Конфиг не найден: {path.resolve()}")
+    with open(path) as f:
+        config = yaml.safe_load(f)
+    logger.info("Конфиг загружен: %s", path.resolve())
+    return config
+
+
+class Orchestrator:
+    def __init__(self, config: dict):
+        self.config = config
+        self.bus = EventBus()
+        self._tasks: list[asyncio.Task] = []
+
+        # Модули (инициализируются в start())
+        self.git_watcher: GitWatcher | None = None
+        self.ollama: OllamaClient | None = None
+        self.context_builder: ContextBuilder | None = None
+        self.trigger_engine: TriggerEngine | None = None
+
+    async def start(self) -> None:
+        """Инициализировать и запустить все модули."""
+        logger.info("Orchestrator: старт...")
+
+        # 1. БД
+        db_path = self.config.get("storage", {}).get("db_path", "~/.local/share/pc-assistant/db.sqlite")
+        await db.init(db_path)
+
+        # 2. Очистка устаревших данных
+        ttl = self.config.get("storage", {}).get("ttl_days", 7)
+        await context_store.cleanup(ttl)
+
+        # 3. Git-коллектор
+        self.git_watcher = GitWatcher(self.config, self.bus)
+        await self.git_watcher.start()
+
+        # 4. Ollama клиент
+        self.ollama = OllamaClient(self.config)
+
+        # 5. Сборщик контекста
+        self.context_builder = ContextBuilder(self.config, git_watcher=self.git_watcher)
+
+        # 6. TriggerEngine — подписывается на события
+        self.trigger_engine = TriggerEngine(
+            self.config, self.bus, self.ollama, self.context_builder
+        )
+
+        # 7. Подписка на результат LLM (для логирования в Day 1)
+        self.bus.on("llm.completed", self._on_llm_completed)
+
+        # 8. Планирование ночной очистки
+        self._tasks.append(
+            asyncio.create_task(self._midnight_cleanup_loop(), name="midnight_cleanup")
+        )
+
+        logger.info("Orchestrator: все модули запущены ✓")
+
+    async def stop(self) -> None:
+        """Graceful shutdown."""
+        logger.info("Orchestrator: остановка...")
+
+        # Останавливаем задачи
+        for task in self._tasks:
+            task.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+
+        # Останавливаем watchdog
+        if self.git_watcher:
+            await asyncio.to_thread(self.git_watcher.stop)
+
+        # Выгружаем модель из VRAM
+        if self.ollama:
+            await self.ollama.unload_model()
+            await self.ollama.close()
+
+        # Закрываем БД
+        await db.close()
+
+        logger.info("Orchestrator: остановлен")
+
+    async def _on_llm_completed(self, data: dict) -> None:
+        """Обработчик завершения LLM — в Day 1 просто красиво логируем."""
+        if not data:
+            return
+        prologue = data.get("prologue", "")
+        tasks = data.get("tasks", [])
+        trigger = data.get("trigger", "?")
+
+        print("\n" + "═" * 60)
+        print(f"🤖 Ассистент [{trigger}]")
+        if prologue:
+            print(f"\n{prologue}\n")
+        if tasks:
+            print("📋 Задачи:")
+            priority_emoji = {"HIGH": "🔴", "MED": "🟡", "LOW": "🟢"}
+            for i, t in enumerate(tasks, 1):
+                emoji = priority_emoji.get(t["priority"], "⚪")
+                project = f" [{t['project']}]" if t.get("project") else ""
+                print(f"  {i}. {emoji} {t['title']}{project}")
+                if t.get("description"):
+                    print(f"     └─ {t['description']}")
+        else:
+            print("  (задачи не сгенерированы)")
+        print("═" * 60 + "\n")
+
+    async def _midnight_cleanup_loop(self) -> None:
+        """Запускать cleanup() каждую ночь в 03:00."""
+        while True:
+            try:
+                now = datetime.now()
+                target = now.replace(hour=3, minute=0, second=0, microsecond=0)
+                if now >= target:
+                    # Уже прошли 03:00 сегодня — ждём завтра
+                    target = target.replace(day=target.day + 1)
+                wait_sec = (target - now).total_seconds()
+                logger.debug("Следующая очистка БД через %.0f сек (в 03:00)", wait_sec)
+                await asyncio.sleep(wait_sec)
+
+                ttl = self.config.get("storage", {}).get("ttl_days", 7)
+                await context_store.cleanup(ttl)
+
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("Ошибка в midnight_cleanup_loop")
+                await asyncio.sleep(3600)  # если что-то пошло не так — повторить через час
