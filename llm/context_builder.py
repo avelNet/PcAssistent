@@ -94,18 +94,25 @@ class ContextBuilder:
     async def _get_vault_context(self) -> dict:
         """
         Читает все Obsidian заметки из root-папки.
+        Передаёт git-снапшоты для умного отбора связанных заметок.
         Возвращает контекст по проектам.
         """
         if not self._vault_reader:
             return {}
 
         try:
-            context = await asyncio.to_thread(self._vault_reader.build_context)
+            # Получаем git-данные для сигнала релевантности заметок
+            git_snapshots = await self._get_git_context()
+
+            context = await asyncio.to_thread(
+                self._vault_reader.build_context, git_snapshots
+            )
             total = context.get("total_notes", 0)
+            selected = context.get("selected_notes", 0)
             projects = list(context.get("projects", {}).keys())
             logger.info(
-                "ContextBuilder: vault — %d заметок из %d проектов: %s",
-                total, len(projects), ", ".join(projects)
+                "ContextBuilder: vault — отобрано %d/%d заметок из %d проектов: %s",
+                selected, total, len(projects), ", ".join(projects)
             )
             return context
         except Exception:
