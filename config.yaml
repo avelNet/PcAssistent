@@ -14,16 +14,13 @@ ollama:
   temperature: 0.3
 
 openrouter:
-  api_key: "YOUR_KEY_HERE"   # получи на https://openrouter.ai/keys (бесплатно)
-  # Бесплатные модели (без лимита запросов, но rate limit ~20 req/min):
-  model: "meta-llama/llama-3.1-8b-instruct:free"
-  # Другие хорошие бесплатные варианты:
-  #   google/gemma-2-9b-it:free          — хорошо следует инструкциям
-  #   mistralai/mistral-7b-instruct:free — быстрый, компактный
-  #   qwen/qwen-2-7b-instruct:free       — если привык к qwen
+  api_key: "YOUR_KEY_HERE"   # получи на https://openrouter.ai/keys и добавь в config.local.yaml
+  model: "auto"              # авто-выбор: при старте запрашивает список бесплатных моделей
+                             # и выбирает лучшую по: семейство (llama>gemma>qwen) + контекст
+                             # можно указать конкретную: "meta-llama/llama-3.1-8b-instruct:free"
   temperature: 0.3
   max_tokens: 1024
-  timeout_s: 60              # облако быстрое, 60 сек более чем достаточно
+  timeout_s: 60
 
 collectors:
   git:
