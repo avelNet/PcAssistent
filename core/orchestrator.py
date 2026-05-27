@@ -86,6 +86,11 @@ class Orchestrator:
         # 4. LLM клиент (Ollama или OpenRouter — зависит от config.llm.provider)
         self.llm_client = create_llm_client(self.config)
 
+        # Для OpenRouter: фоновый пробинг чтобы к первому реальному запросу
+        # уже знать рабочую модель (не тратить время на ротацию)
+        if hasattr(self.llm_client, "start_background_probe"):
+            self.llm_client.start_background_probe()
+
         # 5. Сборщик контекста
         self.context_builder = ContextBuilder(self.config, git_watcher=self.git_watcher)
 

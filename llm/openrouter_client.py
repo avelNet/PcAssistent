@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import time
+from pathlib import Path
 from typing import AsyncIterator
 
 import aiohttp
@@ -22,6 +23,7 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+_MODEL_CACHE_FILE = Path("~/.local/share/pc-assistant/openrouter_model.json").expanduser()
 
 # Семейства моделей в порядке предпочтения (чем раньше в списке — тем лучше)
 _PREFERRED_FAMILIES = [
@@ -55,12 +57,98 @@ class OpenRouterClient:
         cfg = config.get("openrouter", {})
         self.api_key: str = cfg.get("api_key", "")
         self._model_config: str = cfg.get("model", "auto")
-        self.model: str = self._model_config  # будет обновлён при auto
+        self.model: str = self._load_cached_model() or self._model_config
         self.temperature: float = cfg.get("temperature", 0.3)
         self.max_tokens: int = cfg.get("max_tokens", 1024)
         self.timeout_s: int = cfg.get("timeout_s", 60)
         self._session: aiohttp.ClientSession | None = None
         self._free_models_cache: list[dict] | None = None
+        self._probe_task: asyncio.Task | None = None
+
+    # ─── Персистентный кеш рабочей модели ──────────────────────────────────
+
+    def _load_cached_model(self) -> str | None:
+        """Загрузить последнюю рабочую модель с диска."""
+        try:
+            if _MODEL_CACHE_FILE.exists():
+                data = json.loads(_MODEL_CACHE_FILE.read_text())
+                model = data.get("model")
+                if model and model != "auto":
+                    logger.info("OpenRouter: загружена кешированная модель → %s", model)
+                    return model
+        except Exception:
+            pass
+        return None
+
+    def _save_cached_model(self, model: str) -> None:
+        """Сохранить рабочую модель на диск."""
+        try:
+            _MODEL_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            _MODEL_CACHE_FILE.write_text(json.dumps({"model": model, "ts": time.time()}))
+        except Exception as e:
+            logger.debug("OpenRouter: не удалось сохранить модель в кеш: %s", e)
+
+    # ─── Фоновый пробинг моделей ─────────────────────────────────────────────
+
+    def start_background_probe(self) -> None:
+        """
+        Запустить фоновую задачу: найти рабочую модель заранее.
+        Вызывается при старте сервиса — к первому реальному запросу модель уже известна.
+        """
+        if self._model_config != "auto":
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            self._probe_task = loop.create_task(
+                self._probe_models_background(), name="openrouter_model_probe"
+            )
+        except RuntimeError:
+            pass  # нет event loop — ничего страшного
+
+    async def _probe_models_background(self) -> None:
+        """
+        Фоновый пробинг: отправляет минимальный тестовый запрос по моделям
+        в порядке приоритета, находит первую рабочую и запоминает её.
+        """
+        logger.info("OpenRouter: фоновый пробинг моделей...")
+        try:
+            await self.fetch_free_models()
+            ranked = self._ranked_models()
+
+            # Если кешированная модель есть в списке — проверяем её первой
+            if self.model and self.model != "auto" and self.model in ranked:
+                ranked.remove(self.model)
+                ranked.insert(0, self.model)
+
+            for model in ranked[:6]:
+                result = await self._ping_model(model)
+                if result:
+                    if model != self.model:
+                        logger.info("OpenRouter: фоновый пробинг нашёл рабочую модель → %s", model)
+                        self.model = model
+                        self._save_cached_model(model)
+                    else:
+                        logger.info("OpenRouter: кешированная модель подтверждена → %s", model)
+                    return
+                await asyncio.sleep(2)
+
+            logger.warning("OpenRouter: фоновый пробинг не нашёл рабочую модель")
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug("OpenRouter: ошибка фонового пробинга: %s", e)
+
+    async def _ping_model(self, model: str) -> bool:
+        """Отправить минимальный запрос для проверки доступности модели."""
+        try:
+            result = await self._try_complete(
+                system_prompt="Reply with one word.",
+                user_prompt="ping",
+                model=model,
+            )
+            return not isinstance(result, Exception)
+        except Exception:
+            return False
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -190,16 +278,19 @@ class OpenRouterClient:
         if self._model_config != "auto":
             return self._model_config
 
+        # Уже есть рабочая модель (из кеша или пробинга) — используем её
+        if self.model and self.model != "auto":
+            return self.model
+
+        # Первый запуск без кеша — выбираем по рейтингу
         free_models = await self.fetch_free_models()
         picked = self._pick_best(free_models)
 
         if picked:
-            if picked != self.model:
-                logger.info("OpenRouter: авто-выбор модели → %s", picked)
-                self.model = picked
+            logger.info("OpenRouter: авто-выбор модели → %s", picked)
+            self.model = picked
             return picked
 
-        # Фолбэк если API не ответил
         fallback = "meta-llama/llama-3.1-8b-instruct:free"
         logger.warning("OpenRouter: не удалось получить список моделей, используем %s", fallback)
         self.model = fallback
@@ -262,9 +353,10 @@ class OpenRouterClient:
                     continue  # пробуем следующую модель
                 raise result  # другие ошибки — сразу наружу
             else:
-                if attempt > 0:
+                if model != self.model:
                     logger.info("OpenRouter: успешно с моделью %s", model)
-                    self.model = model  # запоминаем рабочую модель
+                    self.model = model
+                self._save_cached_model(model)  # запоминаем на диск
                 return result
 
         raise last_error or OpenRouterError("Все модели вернули 429. Попробуй позже.")
