@@ -1,10 +1,8 @@
 """
 context_builder.py — собирает контекст для LLM из всех источников.
-
-Для Day 1: только git данные.
-Day 2+: добавятся IDE, ошибки, продуктивность, Obsidian.
 """
 
+import asyncio
 import logging
 from datetime import date
 
@@ -19,100 +17,149 @@ class ContextBuilder:
         self.git_watcher = git_watcher
         self.ollama_num_ctx = config.get("ollama", {}).get("num_ctx", 8192)
 
+        # Vault reader — инициализируем если папка существует
+        self._vault_reader = self._init_vault_reader()
+
+    def _init_vault_reader(self):
+        obs_cfg = self.config.get("obsidian", {})
+        root = obs_cfg.get("root")
+        if not root:
+            return None
+        try:
+            from obsidian.vault_reader import VaultReader
+            reader = VaultReader(self.config)
+            if reader.root.exists():
+                logger.info("ContextBuilder: vault reader готов (%s)", reader.root)
+                return reader
+            else:
+                logger.debug("ContextBuilder: vault root не найден: %s", reader.root)
+        except Exception as e:
+            logger.warning("ContextBuilder: не удалось инициализировать vault reader: %s", e)
+        return None
+
     async def build(self, trigger: str, extra: dict | None = None) -> dict:
         """
-        Собрать контекст для LLM.
+        Собрать контекст для LLM из всех источников.
         Возвращает словарь который передаётся в prompt_engine.build().
         """
         logger.info("ContextBuilder: собираю контекст для триггера '%s'", trigger)
         ctx: dict = {}
 
-        # Git снапшоты
-        ctx["git"] = await self._get_git_context()
+        # Запускаем все источники параллельно
+        tasks = {
+            "git":         self._get_git_context(),
+            "history":     self._get_task_history(),
+            "today_tasks": context_store.get_tasks_for_date(),
+            "errors":      context_store.get_errors(hours=24),
+            "obsidian":    self._get_vault_context(),
+        }
 
-        # История задач (3 дня)
-        ctx["history"] = await self._get_task_history()
+        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
 
-        # Задачи на сегодня
-        ctx["today_tasks"] = await context_store.get_tasks_for_date()
+        for key, result in zip(tasks.keys(), results):
+            if isinstance(result, Exception):
+                logger.warning("ContextBuilder: ошибка источника '%s': %s", key, result)
+                ctx[key] = [] if key != "obsidian" else {}
+            else:
+                ctx[key] = result
 
-        # Ошибки
-        ctx["errors"] = await context_store.get_errors(hours=24)
-
-        # Дополнительный контекст от триггера (например, спайк ошибок)
         if extra:
             ctx.update(extra)
 
-        # Приоритизация: если контекст большой — обрезаем менее важное
         ctx = self._trim_context(ctx)
 
-        logger.info("ContextBuilder: контекст готов (%d источников)", len(ctx))
+        sources = [k for k, v in ctx.items() if v]
+        logger.info("ContextBuilder: контекст готов, источники: %s", ", ".join(sources))
         return ctx
 
+    # ─── Источники ──────────────────────────────────────────────────────────
+
     async def _get_git_context(self) -> list[dict]:
-        """Получить актуальные снапшоты репозиториев."""
+        """Актуальные снапшоты репозиториев."""
         if self.git_watcher:
-            # Актуальные данные прямо сейчас
             snapshots = await self.git_watcher.get_all_snapshots()
             if snapshots:
                 return snapshots
 
-        # Фолбэк: последние сохранённые в SQLite
+        # Фолбэк: последние из SQLite
         recent = await context_store.get_all_recent(hours=48)
-        git_snapshots = []
-        for item in recent:
-            if item["source"] == "git":
-                data = item["data"]
-                if isinstance(data, dict):
-                    git_snapshots.append(data)
-        return git_snapshots
+        return [
+            item["data"] for item in recent
+            if item["source"] == "git" and isinstance(item["data"], dict)
+        ]
 
     async def _get_task_history(self) -> list[dict]:
-        """История задач за 3 дня."""
         return await context_store.get_task_history(days=3)
+
+    async def _get_vault_context(self) -> dict:
+        """
+        Читает все Obsidian заметки из root-папки.
+        Возвращает контекст по проектам.
+        """
+        if not self._vault_reader:
+            return {}
+
+        try:
+            context = await asyncio.to_thread(self._vault_reader.build_context)
+            total = context.get("total_notes", 0)
+            projects = list(context.get("projects", {}).keys())
+            logger.info(
+                "ContextBuilder: vault — %d заметок из %d проектов: %s",
+                total, len(projects), ", ".join(projects)
+            )
+            return context
+        except Exception:
+            logger.exception("ContextBuilder: ошибка чтения vault")
+            return {}
+
+    # ─── Обрезка контекста ───────────────────────────────────────────────────
 
     def _trim_context(self, ctx: dict) -> dict:
         """
-        Обрезать контекст если он слишком большой.
-        Порядок обрезки: clipboard → history → fs events.
-        Оцениваем по количеству символов (грубо ~4 chars/token).
+        Если контекст не влезает в num_ctx — обрезаем по приоритету.
+        Порядок обрезки (от менее важного к более важному):
+          1. Содержимое заметок Obsidian → только структура
+          2. История задач → только сегодня
+          3. Git → убираем todos и recent_log
+          4. Ошибки → только топ-5
         """
         import json
-        max_chars = self.ollama_num_ctx * 4 * 0.7  # 70% окна под контекст
 
-        total = len(json.dumps(ctx, ensure_ascii=False, default=str))
+        # 70% окна — под контекст, остальное — системный промпт + ответ
+        max_chars = self.ollama_num_ctx * 4 * 0.7
 
-        if total <= max_chars:
+        def size():
+            return len(json.dumps(ctx, ensure_ascii=False, default=str))
+
+        if size() <= max_chars:
             return ctx
 
-        logger.warning(
-            "ContextBuilder: контекст %d символов > лимит %d, обрезаем",
-            total, max_chars
-        )
+        logger.warning("ContextBuilder: контекст слишком большой (%d символов), обрезаем", size())
 
-        # 1. Обрезаем clipboard
-        ctx.pop("clipboard", None)
-        total = len(json.dumps(ctx, ensure_ascii=False, default=str))
-        if total <= max_chars:
-            return ctx
+        # 1. Obsidian: убираем содержимое заметок, оставляем только структуру
+        if ctx.get("obsidian", {}).get("projects"):
+            for project_notes in ctx["obsidian"]["projects"].values():
+                for note in project_notes:
+                    if len(note.get("content", "")) > 200:
+                        note["content"] = note["content"][:200] + "..."
+            if size() <= max_chars:
+                return ctx
 
-        # 2. Обрезаем историю задач до 1 дня
+        # 2. История задач → только сегодня
         if ctx.get("history"):
             today = date.today().isoformat()
             ctx["history"] = [t for t in ctx["history"] if t.get("date") == today]
-        total = len(json.dumps(ctx, ensure_ascii=False, default=str))
-        if total <= max_chars:
-            return ctx
+            if size() <= max_chars:
+                return ctx
 
-        # 3. Обрезаем git: убираем todos и recent_log
+        # 3. Git → убираем todos и recent_log
         for repo in ctx.get("git", []):
             repo.pop("todos", None)
             repo["recent_log"] = ""
-        total = len(json.dumps(ctx, ensure_ascii=False, default=str))
-        if total <= max_chars:
+        if size() <= max_chars:
             return ctx
 
-        # 4. Оставляем только последние 5 ошибок
+        # 4. Ошибки → топ-5
         if ctx.get("errors"):
             ctx["errors"] = ctx["errors"][:5]
 

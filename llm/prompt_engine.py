@@ -58,6 +58,7 @@ def _morning_briefing(ctx: dict) -> str:
     today = date.today().strftime("%d %B %Y")
     parts = [f"📅 Утренний брифинг — {today}\n"]
 
+    parts.append(_section_obsidian(ctx))
     parts.append(_section_git(ctx))
     parts.append(_section_errors(ctx))
     parts.append(_section_history(ctx))
@@ -97,6 +98,7 @@ def _user_returned(ctx: dict) -> str:
 
     parts = [f"👋 Возвращение после перерыва ({idle_str})\n"]
 
+    parts.append(_section_obsidian(ctx))
     parts.append(_section_git(ctx))
     parts.append(_section_ide(ctx))
     parts.append(_section_today_tasks(ctx))
@@ -148,6 +150,7 @@ def _manual(ctx: dict) -> str:
     today = date.today().strftime("%d %B %Y")
     parts = [f"🔍 Полный анализ — {today}\n"]
 
+    parts.append(_section_obsidian(ctx))
     parts.append(_section_git(ctx))
     parts.append(_section_ide(ctx))
     parts.append(_section_errors(ctx))
@@ -282,6 +285,31 @@ def _section_history(ctx: dict) -> str:
         for t in day_tasks:
             status = "✓" if t.get("done") else "○"
             lines.append(f"    {status} [{t.get('priority','?')}] {t.get('title','')}")
+
+    return "\n".join(lines) + "\n"
+
+
+def _section_obsidian(ctx: dict) -> str:
+    """Заметки из Obsidian vault — все проекты."""
+    obsidian = ctx.get("obsidian", {})
+    projects = obsidian.get("projects", {})
+    if not projects:
+        return ""
+
+    lines = ["## Obsidian — заметки по проектам"]
+
+    for project_name, notes in sorted(projects.items()):
+        lines.append(f"\n### 📁 {project_name}")
+        for note in notes:
+            path = note.get("path", "")
+            # Убираем название проекта из пути для читаемости
+            short_path = path.replace(f"{project_name}/", "", 1)
+            days_ago = note.get("modified_days_ago", 0)
+            age = "сегодня" if days_ago < 1 else f"{int(days_ago)}д назад"
+            lines.append(f"\n#### {short_path} ({age})")
+            content = note.get("content", "").strip()
+            if content:
+                lines.append(content)
 
     return "\n".join(lines) + "\n"
 

@@ -42,10 +42,24 @@ collectors:
 obsidian:
   enabled: false                # включить когда установишь плагин Local REST API
   api_key: "YOUR_KEY_HERE"
-  vault_path: "~/obsidian"
-  daily_folder: "Daily"
+  root: "/home/pavel/Obsidian"  # корень — все проекты внутри найдутся сами
+  daily_folder: "Daily"         # папка с дневными заметками внутри каждого vault
   auto_open: true
   host: "https://127.0.0.1:27124"
+
+  # Папки которые НЕ читаем как контекст (служебные)
+  skip_folders:
+    - ".obsidian"
+    - "Templates"
+    - "Daily"
+
+  # Заметки <= max_note_size_kb читаем полностью
+  # Большие заметки — только первые preview_chars символов
+  max_note_size_kb: 10
+  preview_chars: 600
+
+  # Заметки изменённые за последние N дней читаем всегда полностью
+  recent_days: 7
 
 voice:
   enabled: false                # включить когда установишь piper-tts
