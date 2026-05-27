@@ -1,10 +1,10 @@
 ollama:
   host: "http://localhost:11434"
-  model: "qwen2.5:3b"        # 3b: ~2 GB RAM, ~90 сек на CPU i5-12450H
+  model: "qwen2.5:7b"        # 7b: ~5 GB RAM, ~4-5 мин на CPU i5-12450H
   keep_alive: "10m"
   num_ctx: 8192
   num_predict: 1024
-  num_thread: 8               # 3b лёгкая — берём 8 потоков из 12, система не лагает
+  num_thread: 10              # 7b берём 10 потоков из 12, оставляем 2 для системы
   temperature: 0.3
 
 collectors:

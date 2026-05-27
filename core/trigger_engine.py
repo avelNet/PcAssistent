@@ -182,6 +182,13 @@ class TriggerEngine:
             tasks = result["tasks"]
             prologue = result["prologue"]
 
+            # 6b. Пост-фильтр: убрать задачи которые совпадают с "не начато" канбана
+            # но НЕ совпадают с "в работе" — защита от игнорирования канбана LLM
+            kanban = context.get("obsidian", {}).get("kanban", {})
+            if kanban:
+                tasks = _filter_tasks_by_kanban(tasks, kanban)
+                logger.info("TriggerEngine: после канбан-фильтра задач=%d", len(tasks))
+
             # 7. Сохраняем задачи в БД
             if tasks:
                 await context_store.save_tasks(tasks)
@@ -226,3 +233,59 @@ class TriggerEngine:
     async def trigger_manual(self) -> None:
         """Ручной запуск (для трея и тестирования)."""
         await self.bus.emit("trigger.llm", {"reason": "manual", "priority": "normal"})
+
+
+# ─── Вспомогательные функции ────────────────────────────────────────────────
+
+def _tokenize(text: str) -> set[str]:
+    """Разбить строку на значимые токены (числа + слова > 2 символов)."""
+    import re
+    return set(re.findall(r'\d+|[a-zа-яё]{3,}', text.lower()))
+
+
+def _filter_tasks_by_kanban(tasks: list[dict], kanban: dict) -> list[dict]:
+    """
+    Убрать задачи которые совпадают с 'не начато' но НЕ совпадают с 'в работе'.
+
+    Логика:
+      - Собираем токены всех "в работе" пунктов → wip_tokens
+      - Собираем токены всех "не начато" пунктов → blocked_tokens
+      - Задача удаляется если: пересекается с blocked_tokens И НЕ пересекается с wip_tokens
+      - Если "в работе" пусто — фильтрация не применяется
+    """
+    wip_tokens: set[str] = set()
+    blocked_tokens: set[str] = set()
+
+    for columns in kanban.values():
+        for item in columns.get("in_progress", []):
+            wip_tokens.update(_tokenize(item))
+        for item in columns.get("not_started", []):
+            blocked_tokens.update(_tokenize(item))
+
+    if not wip_tokens:
+        return tasks  # нечего фильтровать — канбан пустой
+
+    # Убираем общие токены (числа, предлоги) чтобы не было ложных срабатываний
+    # Числа важны: "01", "02" etc. — не убираем их
+    # Убираем только слова которые есть и в wip и в blocked (т.к. они не различают)
+    ambiguous = wip_tokens & blocked_tokens
+    distinguishing_blocked = blocked_tokens - ambiguous
+
+    if not distinguishing_blocked:
+        return tasks
+
+    filtered = []
+    for task in tasks:
+        task_tokens = _tokenize(task.get("title", ""))
+        hits_blocked = bool(task_tokens & distinguishing_blocked)
+        hits_wip = bool(task_tokens & wip_tokens)
+
+        if hits_blocked and not hits_wip:
+            logger.info(
+                "TriggerEngine: фильтр канбана убрал задачу '%s' (совпадение с 'не начато')",
+                task.get("title", "")
+            )
+        else:
+            filtered.append(task)
+
+    return filtered

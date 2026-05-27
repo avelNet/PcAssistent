@@ -314,28 +314,34 @@ def _section_kanban(ctx: dict) -> str:
     if not kanban:
         return ""
 
-    lines = ["## 📋 Статус проектов (Kanban)"]
-    lines.append("⚠️ Генерируй задачи ТОЛЬКО для пунктов со статусом 'В работе'!\n")
+    lines = ["## 📋 Kanban — ДОПУСТИМЫЕ ЗАДАЧИ"]
 
     for project, columns in kanban.items():
-        lines.append(f"### {project}")
-
         in_progress = columns.get("in_progress", [])
         not_started = columns.get("not_started", [])
         done = columns.get("done", [])
 
+        lines.append(f"\n### {project}")
+
         if in_progress:
-            lines.append("🔄 В работе (фокус задач сюда):")
+            lines.append("✅ РАЗРЕШЕНО — только эти пункты (они 'В работе'):")
             for item in in_progress:
-                lines.append(f"  - {item}")
+                lines.append(f"  ✔ {item}")
+        else:
+            lines.append("(нет активных задач — предлагай из 'Не начато')")
 
         if done:
-            lines.append("✅ Готово:")
+            lines.append("🏁 Уже готово (не предлагать):")
             for item in done:
                 lines.append(f"  - {item}")
 
         if not_started:
-            lines.append(f"📋 Не начато (не предлагать пока есть незавершённое): {len(not_started)} пунктов")
+            blocked = ", ".join(not_started[:5])
+            if len(not_started) > 5:
+                blocked += f" и ещё {len(not_started) - 5}"
+            lines.append(f"🚫 ЗАБЛОКИРОВАНО — не предлагать пока есть незавершённые выше: {blocked}")
+
+    lines.append("\n⚠️ ПРАВИЛО: предлагай задачи ТОЛЬКО по пунктам с ✔. Всё остальное — запрещено.")
 
     return "\n".join(lines) + "\n"
 
