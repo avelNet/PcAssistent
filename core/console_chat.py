@@ -35,11 +35,13 @@ class ConsoleChat:
 
     async def run(self) -> None:
         """Основной цикл чтения stdin. Блокирует пока не получит EOF или /quit."""
+        # В интерактивном режиме убираем логи из консоли — они мешают чату.
+        # Логи остаются в файле (~/.local/share/pc-assistant/assistant.log).
+        self._suppress_console_logs()
+
         print("\n💬 Чат активен. /help — команды, Ctrl+D — выход\n")
 
         loop = asyncio.get_running_loop()
-
-        # Асинхронное чтение stdin
         reader = asyncio.StreamReader()
         protocol = asyncio.StreamReaderProtocol(reader)
         await loop.connect_read_pipe(lambda: protocol, sys.stdin)
@@ -53,7 +55,7 @@ class ConsoleChat:
                 break
 
             if not line_bytes:  # EOF (Ctrl+D)
-                print("\n👋 Чат закрыт, сервис продолжает работу")
+                print("\n👋 Чат закрыт, сервис продолжает работу в фоне")
                 break
 
             line = line_bytes.decode("utf-8", errors="replace").strip()
@@ -61,6 +63,18 @@ class ConsoleChat:
                 continue
 
             await self._handle(line)
+
+    def _suppress_console_logs(self) -> None:
+        """
+        Убрать StreamHandler из корневого логгера в интерактивном режиме.
+        Логи продолжают писаться в файл — просто не засоряют чат.
+        """
+        root = logging.getLogger()
+        to_remove = [h for h in root.handlers if isinstance(h, logging.StreamHandler)
+                     and not isinstance(h, logging.FileHandler)]
+        for h in to_remove:
+            root.removeHandler(h)
+            logger.debug("ConsoleChat: убрал StreamHandler из логгера")
 
     async def _handle(self, text: str) -> None:
         """Обработать введённую строку."""
@@ -124,20 +138,26 @@ class ConsoleChat:
 
         text_lower = text.lower()
 
-        # Авто-определение намерений
+        # Стоп-слова которые могут стоять между фразой и названием проекта
+        _FILLER = {"только", "сейчас", "именно", "пока", "вот", "над", "на",
+                   "по", "с", "в", "и", "а", "но"}
+
         # "работаем над X" / "фокус на X" → установить фокус
-        for phrase in ["работаем над", "фокус на", "работаю над", "сейчас делаю"]:
+        for phrase in ["работаем над", "фокус на", "работаю над",
+                       "сейчас делаю", "работаем только над", "занимаемся"]:
             if phrase in text_lower:
-                # Извлекаем название проекта после фразы
                 idx = text_lower.find(phrase) + len(phrase)
-                project = text[idx:].strip().strip(",.!").split()[0] if text[idx:].strip() else ""
+                tail = text[idx:].strip().strip(",.!")
+                # Пропускаем стоп-слова и берём первое значимое слово
+                words = tail.split()
+                project = next((w for w in words if w.lower() not in _FILLER), "")
                 if project:
                     set_focus(project)
                     print(f"🎯 Понял, фокус → {project}")
                     return
 
         # "не трогаем X" / "игнорируй X" → добавить в контекст
-        for phrase in ["не трогаем", "игнорируй", "без", "не учитывай"]:
+        for phrase in ["не трогаем", "игнорируй", "не учитывай"]:
             if phrase in text_lower:
                 self._extra_context += f"\nПользователь: {text}"
                 print(f"📝 Учту в следующем запросе")
