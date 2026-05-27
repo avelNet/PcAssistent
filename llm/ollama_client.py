@@ -22,10 +22,11 @@ class OllamaClient:
     def __init__(self, config: dict) -> None:
         cfg = config.get("ollama", {})
         self.host = cfg.get("host", "http://localhost:11434")
-        self.model = cfg.get("model", "qwen2.5:14b")
+        self.model = cfg.get("model", "qwen2.5:7b")
         self.keep_alive = cfg.get("keep_alive", "10m")
         self.num_ctx = cfg.get("num_ctx", 8192)
-        self.num_predict = cfg.get("num_predict", 1024)
+        self.num_predict = cfg.get("num_predict", 768)
+        self.num_thread = cfg.get("num_thread", None)   # None = Ollama сам выберет
         self.temperature = cfg.get("temperature", 0.3)
         self._session: aiohttp.ClientSession | None = None
 
@@ -56,6 +57,17 @@ class OllamaClient:
         except (aiohttp.ClientError, asyncio.TimeoutError):
             return False
 
+    def _build_options(self) -> dict:
+        """Собрать options для Ollama API. num_thread=None — Ollama выбирает сам."""
+        opts: dict = {
+            "temperature": self.temperature,
+            "num_ctx": self.num_ctx,
+            "num_predict": self.num_predict,
+        }
+        if self.num_thread is not None:
+            opts["num_thread"] = self.num_thread
+        return opts
+
     async def complete(self, system_prompt: str, user_prompt: str) -> tuple[str, dict]:
         """
         Отправить промпт и дождаться полного ответа.
@@ -70,14 +82,11 @@ class OllamaClient:
             ],
             "stream": False,
             "keep_alive": self.keep_alive,
-            "options": {
-                "temperature": self.temperature,
-                "num_ctx": self.num_ctx,
-                "num_predict": self.num_predict,
-            },
+            "options": self._build_options(),
         }
 
-        logger.info("Ollama: отправляю запрос [модель=%s, num_ctx=%d]", self.model, self.num_ctx)
+        logger.info("Ollama: отправляю запрос [модель=%s, num_ctx=%d, num_thread=%s]",
+                    self.model, self.num_ctx, self.num_thread or "auto")
         start = time.monotonic()
 
         try:
@@ -130,11 +139,7 @@ class OllamaClient:
             ],
             "stream": True,
             "keep_alive": self.keep_alive,
-            "options": {
-                "temperature": self.temperature,
-                "num_ctx": self.num_ctx,
-                "num_predict": self.num_predict,
-            },
+            "options": self._build_options(),
         }
 
         try:

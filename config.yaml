@@ -1,9 +1,10 @@
 ollama:
   host: "http://localhost:11434"
-  model: "qwen2.5:14b"       # для слабых машин: qwen2.5:7b или mistral:7b
+  model: "qwen2.5:7b"        # 7b: ~4.5 GB RAM, ~1.5 мин на CPU; 14b: ~9 GB, ~4 мин
   keep_alive: "10m"
   num_ctx: 8192
-  num_predict: 1024
+  num_predict: 768            # 768 хватает для задач, быстрее чем 1024
+  num_thread: 6               # из 12 доступных — система остаётся отзывчивой
   temperature: 0.3
 
 collectors:
