@@ -17,14 +17,15 @@ from datetime import date, datetime
 logger = logging.getLogger(__name__)
 
 # Паттерн: TASK: всё что угодно, разделённое |
+# Допускаем leading whitespace/bullets: "  - TASK:", "* TASK:", "**TASK:**"
 _TASK_RE = re.compile(
-    r"^TASK:\s*(.+?)\s*\|\s*(HIGH|MED|LOW)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*$",
+    r"^[*\-\s]*\*{0,2}TASK:\*{0,2}\s*(.+?)\s*\|\s*(HIGH|MED|LOW)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
 
 # Запасной паттерн: TASK: без pipe-разделителей (только заголовок)
 _TASK_SIMPLE_RE = re.compile(
-    r"^TASK:\s*(.+)$",
+    r"^[*\-\s]*\*{0,2}TASK:\*{0,2}\s*(.+)$",
     re.IGNORECASE | re.MULTILINE,
 )
 
