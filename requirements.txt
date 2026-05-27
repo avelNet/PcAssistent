@@ -10,7 +10,9 @@ psutil>=5.9
 # Конфиг
 pyyaml>=6.0
 
-# Голос (устанавливается отдельно: pip install piper-tts)
+# Голос — нейросетевой TTS (модель ~358 MB скачивается при первом запуске)
+supertonic
+# Резервный вариант (устанавливается отдельно: pip install piper-tts)
 # piper-tts>=1.2
 
 # UI — GTK трей (требует системный пакет: apt install python3-gi gir1.2-ayatanaappindicator3-0.1)
