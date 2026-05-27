@@ -40,6 +40,11 @@ _PREFERRED_FAMILIES = [
 # Минимальный контекст — не берём совсем маленькие модели
 _MIN_CONTEXT = 8000
 
+# Максимальный размер модели для авто-выбора (в миллиардах параметров).
+# Большие модели (70b+) имеют жёсткие rate limits на free tier.
+# Определяем по цифрам в имени модели: "70b" → 70, "8b" → 8.
+_MAX_AUTO_PARAMS_B = 32
+
 
 class OpenRouterError(Exception):
     pass
@@ -118,27 +123,67 @@ class OpenRouterClient:
         logger.info("OpenRouter: найдено %d бесплатных моделей с контекстом ≥%d", len(free), _MIN_CONTEXT)
         return free
 
+    @staticmethod
+    def _params_billions(model_id: str) -> int:
+        """Извлечь размер модели из имени: 'llama-3.1-8b' → 8, '70b' → 70."""
+        import re
+        m = re.search(r'(\d+)b', model_id.lower())
+        return int(m.group(1)) if m else 0
+
     def _pick_best(self, models: list[dict]) -> str | None:
         """
         Выбрать лучшую модель из списка.
         Критерии (по убыванию важности):
-          1. Предпочитаемое семейство (llama-3 > gemma-2 > qwen > ...)
-          2. Размер контекстного окна (больше = лучше)
+          1. Размер ≤ _MAX_AUTO_PARAMS_B (исключаем 70b+ с жёсткими rate limits)
+          2. Предпочитаемое семейство (llama-3 > gemma-2 > qwen > ...)
+          3. Размер контекстного окна (больше = лучше)
         """
         if not models:
             return None
 
+        # Фильтруем слишком большие модели
+        candidates = [
+            m for m in models
+            if self._params_billions(m["id"]) <= _MAX_AUTO_PARAMS_B
+        ]
+        # Если вдруг все большие — берём из полного списка
+        if not candidates:
+            candidates = models
+
         def score(m: dict) -> tuple[int, int]:
             model_id = m["id"].lower()
-            family_score = len(_PREFERRED_FAMILIES)  # худший score по умолчанию
+            family_score = len(_PREFERRED_FAMILIES)
             for i, family in enumerate(_PREFERRED_FAMILIES):
                 if family in model_id:
                     family_score = i
                     break
-            return (family_score, -m["context_length"])  # меньше family_score = лучше
+            return (family_score, -m["context_length"])
 
-        best = min(models, key=score)
+        best = min(candidates, key=score)
         return best["id"]
+
+    def _ranked_models(self) -> list[str]:
+        """Вернуть все кешированные модели в порядке от лучшей к худшей."""
+        if not self._free_models_cache:
+            return []
+
+        candidates = [
+            m for m in self._free_models_cache
+            if self._params_billions(m["id"]) <= _MAX_AUTO_PARAMS_B
+        ]
+        if not candidates:
+            candidates = self._free_models_cache
+
+        def score(m: dict) -> tuple[int, int]:
+            model_id = m["id"].lower()
+            family_score = len(_PREFERRED_FAMILIES)
+            for i, family in enumerate(_PREFERRED_FAMILIES):
+                if family in model_id:
+                    family_score = i
+                    break
+            return (family_score, -m["context_length"])
+
+        return [m["id"] for m in sorted(candidates, key=score)]
 
     async def _resolve_model(self) -> str:
         """Вернуть итоговое имя модели (авто-выбор или явное из конфига)."""
@@ -180,6 +225,7 @@ class OpenRouterClient:
     async def complete(self, system_prompt: str, user_prompt: str) -> tuple[str, dict]:
         """
         Отправить промпт и дождаться полного ответа.
+        При 429 — ждёт и пробует следующую модель из ranked списка.
         Возвращает (текст ответа, метаданные: tokens, duration).
         """
         if not self.api_key or self.api_key == "YOUR_KEY_HERE":
@@ -188,7 +234,45 @@ class OpenRouterClient:
                 "Добавь в config.local.yaml: openrouter.api_key"
             )
 
-        model = await self._resolve_model()
+        await self._resolve_model()
+
+        # Список моделей для попыток: текущая + остальные по рангу
+        ranked = self._ranked_models()
+        if self.model in ranked:
+            ranked.remove(self.model)
+        models_to_try = [self.model] + ranked[:4]  # максимум 5 попыток
+
+        last_error: Exception | None = None
+
+        for attempt, model in enumerate(models_to_try):
+            if attempt > 0:
+                wait = min(5 * attempt, 20)  # 5с, 10с, 15с, 20с
+                logger.warning(
+                    "OpenRouter: модель %s недоступна, пробую %s (ждём %dс)",
+                    models_to_try[attempt - 1], model, wait
+                )
+                await asyncio.sleep(wait)
+
+            result = await self._try_complete(system_prompt, user_prompt, model)
+
+            if isinstance(result, Exception):
+                last_error = result
+                err_str = str(result)
+                if "429" in err_str or "402" in err_str:
+                    continue  # пробуем следующую модель
+                raise result  # другие ошибки — сразу наружу
+            else:
+                if attempt > 0:
+                    logger.info("OpenRouter: успешно с моделью %s", model)
+                    self.model = model  # запоминаем рабочую модель
+                return result
+
+        raise last_error or OpenRouterError("Все модели вернули 429. Попробуй позже.")
+
+    async def _try_complete(
+        self, system_prompt: str, user_prompt: str, model: str
+    ) -> tuple[str, dict] | Exception:
+        """Одна попытка запроса к конкретной модели. Возвращает результат или Exception."""
         session = await self._get_session()
         payload = {
             "model": model,
@@ -200,7 +284,7 @@ class OpenRouterClient:
             "max_tokens": self.max_tokens,
         }
 
-        logger.info("OpenRouter: отправляю запрос [модель=%s]", model)
+        logger.info("OpenRouter: запрос [модель=%s]", model)
         start = time.monotonic()
 
         try:
@@ -212,49 +296,47 @@ class OpenRouterClient:
                 body = await resp.text()
 
                 if resp.status == 401:
-                    raise OpenRouterError("Неверный API ключ (401). Проверь openrouter.api_key")
+                    return OpenRouterError("Неверный API ключ (401). Проверь openrouter.api_key")
                 if resp.status == 429:
-                    raise OpenRouterError("Превышен лимит запросов (429). Подожди немного.")
+                    return OpenRouterError(f"429: rate limit для {model}")
                 if resp.status == 402:
-                    raise OpenRouterError("Недостаточно кредитов (402). Используй :free модель.")
+                    return OpenRouterError(f"402: лимит кредитов для {model}")
                 if resp.status != 200:
-                    raise OpenRouterError(f"HTTP {resp.status}: {body[:300]}")
+                    return OpenRouterError(f"HTTP {resp.status}: {body[:200]}")
 
                 data = json.loads(body)
 
         except aiohttp.ClientConnectorError:
-            raise OpenRouterError("OpenRouter недоступен. Проверь интернет-соединение.")
+            return OpenRouterError("OpenRouter недоступен. Проверь интернет-соединение.")
         except aiohttp.ClientError as e:
-            raise OpenRouterError(f"Сетевая ошибка: {e}")
+            return OpenRouterError(f"Сетевая ошибка: {e}")
 
-        duration = time.monotonic() - start
-
-        # Обработка ошибки от API внутри 200-ответа (bывает у некоторых моделей)
         if "error" in data:
             err = data["error"]
-            raise OpenRouterError(f"API ошибка: {err.get('message', err)}")
+            code = err.get("code", 0)
+            if code == 429:
+                return OpenRouterError(f"429: rate limit для {model}")
+            return OpenRouterError(f"API ошибка: {err.get('message', err)}")
 
+        duration = time.monotonic() - start
         choice = data.get("choices", [{}])[0]
         content = choice.get("message", {}).get("content", "")
-
         usage = data.get("usage", {})
-        prompt_tokens = usage.get("prompt_tokens", 0)
-        completion_tokens = usage.get("completion_tokens", 0)
 
         logger.info(
             "OpenRouter: ответ за %.1fс, токены: prompt=%d completion=%d",
-            duration, prompt_tokens, completion_tokens
+            duration,
+            usage.get("prompt_tokens", 0),
+            usage.get("completion_tokens", 0),
         )
 
-        meta = {
+        return content, {
             "duration_s": round(duration, 2),
-            "tokens_prompt": prompt_tokens,
-            "tokens_eval": completion_tokens,
-            "tokens_total": prompt_tokens + completion_tokens,
+            "tokens_prompt": usage.get("prompt_tokens", 0),
+            "tokens_eval": usage.get("completion_tokens", 0),
+            "tokens_total": usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0),
             "model": data.get("model", model),
         }
-
-        return content, meta
 
     async def stream(self, system_prompt: str, user_prompt: str) -> AsyncIterator[str]:
         """Стриминговый режим — yields токены по мере генерации."""
