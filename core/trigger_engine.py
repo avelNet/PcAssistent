@@ -22,6 +22,7 @@ class TriggerEngine:
     def __init__(self, config: dict, bus: EventBus,
                  ollama, context_builder: ContextBuilder):
         self.config = config.get("trigger", {})
+        self._full_config = config  # нужен для SpeechOutput
         self.bus = bus
         self.ollama = ollama
         self.context_builder = context_builder
@@ -256,9 +257,13 @@ class TriggerEngine:
             self._last_run_ts = time.time()
             self._last_context_hash = context_hash
 
-            # 10. Desktop-уведомление с задачами
+            # 10. Desktop-уведомление + голос (если voice=True)
             from core.notifier import notify_tasks
+            from voice.speech_output import SpeechOutput
             await notify_tasks(tasks, prologue=prologue, trigger=trigger)
+            if voice:
+                sp = SpeechOutput(self._full_config)
+                await sp.speak_tasks(tasks, prologue=prologue, trigger=trigger)
 
             # 11. Уведомляем систему
             await self.bus.emit("llm.completed", {
