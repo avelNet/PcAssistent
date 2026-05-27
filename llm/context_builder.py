@@ -7,6 +7,7 @@ import logging
 from datetime import date
 
 from storage import context_store
+from storage.focus_store import get_focus
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,12 @@ class ContextBuilder:
 
         if extra:
             ctx.update(extra)
+
+        # Добавляем текущий фокус — prompt_engine использует его для фильтрации
+        focus = get_focus()
+        if focus:
+            ctx["focus"] = focus
+            logger.info("ContextBuilder: активен фокус → %s", focus)
 
         ctx = self._trim_context(ctx)
 

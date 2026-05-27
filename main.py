@@ -161,6 +161,11 @@ async def run_check(config: dict) -> None:
     else:
         print("  ⚠ репозитории не найдены — проверь collectors.git.scan_dirs в config.yaml")
 
+    # Текущий фокус
+    from storage.focus_store import get_focus
+    focus = get_focus()
+    print(f"\nФокус: {'🎯 ' + focus if focus else 'все проекты'}")
+
     print()
     if all_ok:
         print("✅ Всё готово к запуску!")
@@ -175,6 +180,11 @@ def main() -> None:
     parser.add_argument("--trigger", help="Однократный запуск триггера (manual, morning_briefing, ...)")
     parser.add_argument("--check", action="store_true", help="Проверить окружение")
     parser.add_argument("--debug", action="store_true", help="DEBUG логирование")
+    parser.add_argument(
+        "--focus",
+        metavar="PROJECT",
+        help="Установить фокус на проект (или 'off' чтобы снять). Пример: --focus PcAssistent",
+    )
     args = parser.parse_args()
 
     try:
@@ -191,7 +201,17 @@ def main() -> None:
     logger.info("PC Assistant стартует...")
 
     try:
-        if args.check:
+        if args.focus is not None:
+            from storage.focus_store import set_focus, get_focus
+            set_focus(args.focus)
+            current = get_focus()
+            if current:
+                print(f"🎯 Фокус установлен: {current}")
+                print("   LLM будет генерировать задачи только по этому проекту.")
+                print("   Снять: python3 main.py --focus off")
+            else:
+                print("✅ Фокус снят — все проекты активны")
+        elif args.check:
             asyncio.run(run_check(config))
         elif args.trigger:
             asyncio.run(run_trigger(config, args.trigger))

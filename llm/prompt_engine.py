@@ -61,11 +61,20 @@ def build(trigger: str, context: dict) -> tuple[str, str]:
     builder = builders.get(trigger, _manual)
     user_prompt = builder(context)
 
+    # Если установлен фокус — добавляем жёсткое ограничение по проекту
+    focus = context.get("focus")
+    if focus:
+        user_prompt += (
+            f"\n\n🎯 РЕЖИМ ФОКУСА АКТИВЕН: работаем ТОЛЬКО с проектом «{focus}».\n"
+            f"Генерируй задачи исключительно по этому проекту. "
+            f"Остальные проекты — не упоминай и не предлагай."
+        )
+
     # Явное напоминание о формате в конце каждого промпта
     user_prompt += "\n\nНапомню: каждая задача ОБЯЗАТЕЛЬНО начинается с TASK: и содержит 4 поля через |"
 
-    logger.debug("prompt_engine: триггер='%s', длина промпта=%d символов",
-                 trigger, len(user_prompt))
+    logger.debug("prompt_engine: триггер='%s', фокус='%s', длина промпта=%d символов",
+                 trigger, focus or "нет", len(user_prompt))
 
     return SYSTEM_PROMPT, user_prompt
 
