@@ -43,8 +43,9 @@ class TaskSyncer:
         logger.debug("TaskSyncer: инициализирован")
 
     def _subscribe(self) -> None:
-        self.bus.on("llm.completed",         self._on_llm_completed)
-        self.bus.on("obsidian.daily_changed", self._on_daily_changed)
+        self.bus.on("llm.completed",            self._on_llm_completed)
+        self.bus.on("llm.background_completed", self._on_background_completed)
+        self.bus.on("obsidian.daily_changed",   self._on_daily_changed)
 
     # ─── LLM → Obsidian ─────────────────────────────────────────────────────
 
@@ -100,6 +101,42 @@ class TaskSyncer:
                         "TaskSyncer: дейли заметка → '%s' (%d задач, trigger=%s)",
                         path, len(proj_tasks), trigger,
                     )
+
+    # ─── Фоновая запись (другие проекты) ────────────────────────────────────
+
+    async def _on_background_completed(self, data: dict) -> None:
+        """
+        Тихая запись задач для фонового проекта.
+        Без уведомлений, без открытия Obsidian — только файл.
+        """
+        if not data or not self.client.enabled:
+            return
+
+        tasks   = data.get("tasks", [])
+        project = data.get("project")
+        prologue = data.get("prologue", "")
+
+        if not tasks or not project:
+            return
+
+        if not self.client.shared_root:
+            return
+
+        from pathlib import Path as _Path
+        fs_path = self.client.daily_path_fs(project)
+        content = self.client._build_task_list(tasks, prologue, project)
+
+        def _write():
+            fs_path.parent.mkdir(parents=True, exist_ok=True)
+            # Перезаписываем фоновые заметки — они не открыты пользователем
+            fs_path.write_text(content, encoding="utf-8")
+
+        import asyncio as _aio
+        await _aio.to_thread(_write)
+        logger.info(
+            "TaskSyncer[bg]: '%s' → %d задач (без уведомления)",
+            project, len(tasks),
+        )
 
     # ─── Obsidian → SQLite ───────────────────────────────────────────────────
 

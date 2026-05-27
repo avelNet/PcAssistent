@@ -50,16 +50,22 @@ class ContextBuilder:
             logger.warning("ContextBuilder: не удалось инициализировать vault reader: %s", e)
         return None
 
-    async def build(self, trigger: str, extra: dict | None = None) -> dict:
+    async def build(
+        self,
+        trigger: str,
+        extra: dict | None = None,
+        project_override: str | None = None,
+    ) -> dict:
         """
         Собрать контекст для LLM из всех источников.
+        project_override — принудительный фокус (для фонового анализа других проектов).
         Возвращает словарь который передаётся в prompt_engine.build().
         """
         logger.info("ContextBuilder: собираю контекст для триггера '%s'", trigger)
         ctx: dict = {}
 
         # Запускаем все источники параллельно
-        tasks = {
+        source_tasks = {
             "git":          self._get_git_context(),
             "history":      self._get_task_history(),
             "today_tasks":  context_store.get_tasks_for_date(),
@@ -71,9 +77,9 @@ class ContextBuilder:
             "progress":     self._get_progress_context(),
         }
 
-        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+        results = await asyncio.gather(*source_tasks.values(), return_exceptions=True)
 
-        for key, result in zip(tasks.keys(), results):
+        for key, result in zip(source_tasks.keys(), results):
             if isinstance(result, Exception):
                 logger.warning("ContextBuilder: ошибка источника '%s': %s", key, result)
                 ctx[key] = [] if key != "obsidian" else {}
@@ -83,17 +89,27 @@ class ContextBuilder:
         if extra:
             ctx.update(extra)
 
-        # Добавляем текущий фокус — prompt_engine использует его для фильтрации
-        focus = get_focus()
+        # Фокус: project_override (фоновый режим) > get_focus() (пользовательский)
+        focus = project_override or get_focus()
         if focus:
             ctx["focus"] = focus
-            logger.info("ContextBuilder: активен фокус → %s", focus)
+            if project_override:
+                logger.debug("ContextBuilder: фоновый анализ → %s", focus)
+            else:
+                logger.info("ContextBuilder: активен фокус → %s", focus)
 
         ctx = self._trim_context(ctx)
 
         sources = [k for k, v in ctx.items() if v]
         logger.info("ContextBuilder: контекст готов, источники: %s", ", ".join(sources))
         return ctx
+
+    async def get_known_projects(self) -> list[str]:
+        """Список всех известных проектов из GitWatcher."""
+        if not self.git_watcher:
+            return []
+        snap = await self.git_watcher.get_snapshot()
+        return [r["name"] for r in snap.get("repos", []) if r.get("name")]
 
     # ─── Источники ──────────────────────────────────────────────────────────
 

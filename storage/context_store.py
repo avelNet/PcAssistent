@@ -102,18 +102,25 @@ async def get_all_recent(hours: int = 48) -> list[dict]:
 
 # ─── Задачи ─────────────────────────────────────────────────────────────────
 
-async def replace_today_tasks(tasks: list[dict]) -> None:
+async def replace_today_tasks(tasks: list[dict], project: str | None = None) -> None:
     """
-    Заменить все незавершённые задачи за сегодня новым набором.
+    Заменить незавершённые задачи за сегодня новым набором.
+    project — если указан, удаляем только задачи этого проекта (фоновый режим).
     Завершённые (done=1) задачи НЕ трогаем — пользователь мог их отметить.
-    Вызывать вместо save_tasks при каждом запуске LLM.
     """
     today = date.today().isoformat()
 
     def _do():
         conn = _conn()
-        # Удаляем только незавершённые задачи за сегодня
-        conn.execute("DELETE FROM tasks WHERE date=? AND done=0", (today,))
+        if project is not None:
+            # Фоновый режим — чистим только этот проект, не трогаем фокусный
+            conn.execute(
+                "DELETE FROM tasks WHERE date=? AND done=0 AND project=?",
+                (today, project),
+            )
+        else:
+            # Основной режим — чистим все незавершённые за сегодня
+            conn.execute("DELETE FROM tasks WHERE date=? AND done=0", (today,))
         for t in tasks:
             conn.execute(
                 """

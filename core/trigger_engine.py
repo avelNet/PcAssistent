@@ -283,6 +283,13 @@ class TriggerEngine:
             logger.info("\n%s", task_parser.format_tasks_for_display(tasks))
             logger.info("═" * 50)
 
+            # 14. Запускаем фоновый анализ остальных проектов (не блокирует)
+            active_project = context.get("focus")
+            asyncio.create_task(
+                self._run_background_projects(skip=active_project),
+                name="background_analysis",
+            )
+
         except Exception as e:
             # Ловим OllamaError, OpenRouterError и любые другие ошибки LLM
             logger.error("TriggerEngine: ошибка LLM — %s", e)
@@ -290,6 +297,70 @@ class TriggerEngine:
                 logger.exception("TriggerEngine: детали ошибки")
         finally:
             self._running = False
+
+    # ─── Фоновый анализ других проектов ─────────────────────────────────────
+
+    async def _run_background_projects(self, skip: str | None = None) -> None:
+        """
+        Тихий анализ всех проектов из ~/Development/ кроме активного.
+        Запускается после основного LLM-цикла, не блокирует UI.
+        """
+        # Ждём немного — TTS ещё может играть, не перегружаем LLM сразу
+        await asyncio.sleep(10)
+
+        try:
+            all_projects = await self.context_builder.get_known_projects()
+        except Exception as e:
+            logger.debug("background: не удалось получить проекты: %s", e)
+            return
+
+        # Исключаем активный проект и дубликаты
+        projects = list(dict.fromkeys(
+            p for p in all_projects if p and p != skip
+        ))
+
+        if not projects:
+            return
+
+        logger.info("TriggerEngine[bg]: фоновый анализ %d проектов: %s",
+                    len(projects), ", ".join(projects))
+
+        for project in projects:
+            # Пауза между проектами — не атакуем API залпом
+            await asyncio.sleep(5)
+            await self._run_background_single(project)
+
+    async def _run_background_single(self, project: str) -> None:
+        """Один фоновый цикл для конкретного проекта: без голоса, без уведомлений."""
+        try:
+            logger.debug("TriggerEngine[bg]: анализ '%s'...", project)
+
+            context = await self.context_builder.build(
+                "manual", project_override=project
+            )
+            system_prompt, user_prompt = prompt_engine.build("manual", context)
+            raw_text, meta = await self.ollama.complete(system_prompt, user_prompt)
+
+            result = task_parser.parse(raw_text)
+            tasks  = result["tasks"]
+            if not tasks:
+                logger.debug("TriggerEngine[bg]: '%s' — задач нет", project)
+                return
+
+            # Сохраняем только задачи этого проекта (не трогаем фокусные)
+            await context_store.replace_today_tasks(tasks, project=project)
+
+            # Уведомляем TaskSyncer → тихая запись в Obsidian
+            await self.bus.emit("llm.background_completed", {
+                "tasks":   tasks,
+                "prologue": result.get("prologue", ""),
+                "project": project,
+            })
+
+            logger.info("TriggerEngine[bg]: '%s' — %d задач записано", project, len(tasks))
+
+        except Exception as e:
+            logger.debug("TriggerEngine[bg]: '%s' ошибка: %s", project, e)
 
     # ─── Публичные методы ────────────────────────────────────────────────────
 
