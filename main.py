@@ -97,8 +97,8 @@ async def run_trigger(config: dict, trigger: str) -> None:
 
 
 async def run_check(config: dict) -> None:
-    """Проверить окружение: Ollama, модели, зависимости."""
-    from llm.ollama_client import OllamaClient
+    """Проверить окружение: LLM провайдер, зависимости, git."""
+    from llm.client_factory import create_llm_client
     import importlib
 
     print("\n🔍 Проверка окружения PC Assistant\n")
@@ -118,17 +118,26 @@ async def run_check(config: dict) -> None:
             print(f"  {dep}: ✗ — pip install {dep}")
             all_ok = False
 
-    # Ollama
-    print("\nOllama:")
-    ollama = OllamaClient(config)
-    available = await ollama.check_availability()
-    if available:
-        print(f"  {config['ollama']['model']}: ✓")
-    else:
-        print(f"  ✗ Ollama недоступна или модель не установлена")
-        print(f"  Запусти: ollama serve && ollama pull {config['ollama']['model']}")
+    # LLM провайдер
+    provider = config.get("llm", {}).get("provider", "ollama")
+    print(f"\nLLM провайдер: {provider}")
+    try:
+        llm = create_llm_client(config)
+        available = await llm.check_availability()
+        model = getattr(llm, "model", "?")
+        if available:
+            print(f"  {model}: ✓")
+        else:
+            print(f"  ✗ {model} недоступна")
+            if provider == "ollama":
+                print(f"  Запусти: ollama serve && ollama pull {model}")
+            elif provider == "openrouter":
+                print(f"  Проверь openrouter.api_key в config.yaml")
+            all_ok = False
+        await llm.close()
+    except Exception as e:
+        print(f"  ✗ Ошибка инициализации LLM: {e}")
         all_ok = False
-    await ollama.close()
 
     # Директория БД
     db_path = Path(config.get("storage", {}).get("db_path", "~/.local/share/pc-assistant/db.sqlite")).expanduser()

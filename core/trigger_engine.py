@@ -15,7 +15,6 @@ from datetime import datetime
 
 from core.event_bus import EventBus
 from llm.context_builder import ContextBuilder
-from llm.ollama_client import OllamaClient, OllamaError
 from llm import prompt_engine, task_parser
 from storage import context_store
 
@@ -24,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 class TriggerEngine:
     def __init__(self, config: dict, bus: EventBus,
-                 ollama: OllamaClient, context_builder: ContextBuilder):
+                 ollama, context_builder: ContextBuilder):
         self.config = config.get("trigger", {})
         self.bus = bus
         self.ollama = ollama
@@ -221,10 +220,11 @@ class TriggerEngine:
             logger.info("\n%s", task_parser.format_tasks_for_display(tasks))
             logger.info("═" * 50)
 
-        except OllamaError as e:
-            logger.error("TriggerEngine: ошибка Ollama — %s", e)
-        except Exception:
-            logger.exception("TriggerEngine: неожиданная ошибка")
+        except Exception as e:
+            # Ловим OllamaError, OpenRouterError и любые другие ошибки LLM
+            logger.error("TriggerEngine: ошибка LLM — %s", e)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.exception("TriggerEngine: детали ошибки")
         finally:
             self._running = False
 

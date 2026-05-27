@@ -1,3 +1,9 @@
+# ─── LLM провайдер ────────────────────────────────────────────────────────────
+# provider: "ollama"       — локально, без интернета, медленнее на CPU
+# provider: "openrouter"   — облако, бесплатные модели, нужен интернет + api_key
+llm:
+  provider: "ollama"
+
 ollama:
   host: "http://localhost:11434"
   model: "qwen2.5:7b"        # 7b: ~5 GB RAM, ~4-5 мин на CPU i5-12450H
@@ -6,6 +12,18 @@ ollama:
   num_predict: 1024
   num_thread: 10              # 7b берём 10 потоков из 12, оставляем 2 для системы
   temperature: 0.3
+
+openrouter:
+  api_key: "YOUR_KEY_HERE"   # получи на https://openrouter.ai/keys (бесплатно)
+  # Бесплатные модели (без лимита запросов, но rate limit ~20 req/min):
+  model: "meta-llama/llama-3.1-8b-instruct:free"
+  # Другие хорошие бесплатные варианты:
+  #   google/gemma-2-9b-it:free          — хорошо следует инструкциям
+  #   mistralai/mistral-7b-instruct:free — быстрый, компактный
+  #   qwen/qwen-2-7b-instruct:free       — если привык к qwen
+  temperature: 0.3
+  max_tokens: 1024
+  timeout_s: 60              # облако быстрое, 60 сек более чем достаточно
 
 collectors:
   git:

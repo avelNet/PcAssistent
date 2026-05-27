@@ -15,7 +15,7 @@ from core.event_bus import EventBus
 from core.trigger_engine import TriggerEngine
 from collectors.git_watcher import GitWatcher
 from llm.context_builder import ContextBuilder
-from llm.ollama_client import OllamaClient
+from llm.client_factory import create_llm_client
 from storage import db, context_store
 
 logger = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ class Orchestrator:
 
         # Модули (инициализируются в start())
         self.git_watcher: GitWatcher | None = None
-        self.ollama: OllamaClient | None = None
+        self.llm_client = None   # OllamaClient или OpenRouterClient
         self.context_builder: ContextBuilder | None = None
         self.trigger_engine: TriggerEngine | None = None
 
@@ -60,15 +60,15 @@ class Orchestrator:
         self.git_watcher = GitWatcher(self.config, self.bus)
         await self.git_watcher.start()
 
-        # 4. Ollama клиент
-        self.ollama = OllamaClient(self.config)
+        # 4. LLM клиент (Ollama или OpenRouter — зависит от config.llm.provider)
+        self.llm_client = create_llm_client(self.config)
 
         # 5. Сборщик контекста
         self.context_builder = ContextBuilder(self.config, git_watcher=self.git_watcher)
 
         # 6. TriggerEngine — подписывается на события
         self.trigger_engine = TriggerEngine(
-            self.config, self.bus, self.ollama, self.context_builder
+            self.config, self.bus, self.llm_client, self.context_builder
         )
 
         # 7. Подписка на результат LLM (для логирования в Day 1)
@@ -95,10 +95,11 @@ class Orchestrator:
         if self.git_watcher:
             await asyncio.to_thread(self.git_watcher.stop)
 
-        # Выгружаем модель из VRAM
-        if self.ollama:
-            await self.ollama.unload_model()
-            await self.ollama.close()
+        # Закрываем LLM клиент (Ollama — выгружает модель из RAM, OpenRouter — закрывает сессию)
+        if self.llm_client:
+            if hasattr(self.llm_client, "unload_model"):
+                await self.llm_client.unload_model()
+            await self.llm_client.close()
 
         # Закрываем БД
         await db.close()
