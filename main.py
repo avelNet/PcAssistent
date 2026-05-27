@@ -75,13 +75,23 @@ async def run_trigger(config: dict, trigger: str) -> None:
     """
     logger = logging.getLogger(__name__)
     orchestrator = Orchestrator(config)
+
+    # Ждём llm.completed вместо фиксированного sleep
+    done_event = asyncio.Event()
+    def _on_llm_done(data):
+        done_event.set()
+    orchestrator.bus.on("llm.completed", _on_llm_done)
+
     await orchestrator.start()
 
     logger.info("Запускаю триггер: %s", trigger)
     if orchestrator.trigger_engine:
         await orchestrator.trigger_engine.trigger_manual()
-        # Даём время на завершение всех async задач
-        await asyncio.sleep(5)
+        # Ждём завершения LLM — таймаут 10 минут (CPU-only может быть медленным)
+        try:
+            await asyncio.wait_for(done_event.wait(), timeout=600)
+        except asyncio.TimeoutError:
+            logger.error("Таймаут: LLM не ответила за 10 минут")
 
     await orchestrator.stop()
 

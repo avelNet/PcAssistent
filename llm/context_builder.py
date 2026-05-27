@@ -136,12 +136,30 @@ class ContextBuilder:
 
         logger.warning("ContextBuilder: контекст слишком большой (%d символов), обрезаем", size())
 
-        # 1. Obsidian: убираем содержимое заметок, оставляем только структуру
+        # 1. Obsidian: сначала режем до 300 символов на заметку
         if ctx.get("obsidian", {}).get("projects"):
             for project_notes in ctx["obsidian"]["projects"].values():
                 for note in project_notes:
-                    if len(note.get("content", "")) > 200:
-                        note["content"] = note["content"][:200] + "..."
+                    if len(note.get("content", "")) > 300:
+                        note["content"] = note["content"][:300] + "..."
+            if size() <= max_chars:
+                return ctx
+
+        # 1b. Всё ещё большой — оставляем только недавние заметки (≤3 дней)
+        if ctx.get("obsidian", {}).get("projects"):
+            for proj in ctx["obsidian"]["projects"]:
+                ctx["obsidian"]["projects"][proj] = [
+                    n for n in ctx["obsidian"]["projects"][proj]
+                    if n.get("modified_days_ago", 999) <= 3
+                ]
+            if size() <= max_chars:
+                return ctx
+
+        # 1c. Всё ещё большой — убираем содержимое, только пути
+        if ctx.get("obsidian", {}).get("projects"):
+            for project_notes in ctx["obsidian"]["projects"].values():
+                for note in project_notes:
+                    note["content"] = ""
             if size() <= max_chars:
                 return ctx
 
