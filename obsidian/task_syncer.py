@@ -27,6 +27,34 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _parse_undone_tasks(content: str) -> list[dict]:
+    """
+    Парсит невыполненные [ ] задачи из markdown.
+    Возвращает список задач с title, id, priority (угадывается из секции).
+    """
+    tasks = []
+    current_priority = "MED"
+    _PRIORITY_MAP = {"🔴": "HIGH", "🟡": "MED", "🟢": "LOW"}
+
+    for line in content.splitlines():
+        for emoji, prio in _PRIORITY_MAP.items():
+            if emoji in line and line.startswith("##"):
+                current_priority = prio
+                break
+        m = re.match(
+            r'\s*-\s+\[ \]\s+(.+?)(?:\s+<!--\s+id:([^>]+?)\s+-->)?\s*$',
+            line,
+        )
+        if m:
+            tasks.append({
+                "title":    m.group(1).strip(),
+                "id":       (m.group(2) or "").strip(),
+                "priority": current_priority,
+                "done":     False,
+            })
+    return tasks
+
+
 def _parse_done_state(content: str) -> dict[str, dict]:
     """
     Парсит выполненные задачи из markdown.
@@ -175,7 +203,6 @@ class TaskSyncer:
                 logger.debug("TaskSyncer: не удалось прочитать существующий файл: %s", e)
 
         # Строим индекс по нормализованным заголовкам для fuzzy-match
-        # (нужен когда LLM генерирует новый UUID но тот же заголовок)
         done_by_title = {
             _norm_title(v.get("title", k)): v
             for k, v in done_state.items()
@@ -184,11 +211,28 @@ class TaskSyncer:
         for task in tasks:
             tid   = task.get("id", "")
             title = task.get("title", "")
-            # Приоритет: match по ID, потом по заголовку
             match = done_state.get(tid) or done_by_title.get(_norm_title(title))
             if match:
                 task["done"] = True
                 task["done_by"] = match.get("done_by", "")
+
+        # Сохраняем незакрытые [ ] задачи из существующего файла
+        # которые не совпадают с новыми от LLM (перенос с прошлого дня)
+        if fs_path.exists():
+            existing_undone = _parse_undone_tasks(
+                await asyncio.to_thread(fs_path.read_text, "utf-8")
+            )
+            new_titles = {_norm_title(t.get("title", "")) for t in tasks}
+            carried = [
+                t for t in existing_undone
+                if _norm_title(t.get("title", "")) not in new_titles
+            ]
+            if carried:
+                tasks = carried + tasks
+                logger.debug(
+                    "TaskSyncer: перенесено %d незакрытых задач с предыдущего дня",
+                    len(carried),
+                )
 
         content = self.client._build_task_list(tasks, prologue, project)
 

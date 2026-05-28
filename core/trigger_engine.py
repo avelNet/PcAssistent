@@ -619,7 +619,7 @@ class TriggerEngine:
             raw, _ = await self.ollama.complete(system, user)
             # Берём только начиная с первого ##
             lines = raw.splitlines()
-            start = next((i for i, l in enumerate(lines) if l.startswith("##")), 0)
+            start = next((i for i, ln in enumerate(lines) if ln.startswith("##")), 0)
             return "\n".join(lines[start:]).strip() + "\n"
         except Exception as e:
             logger.debug("TriggerEngine: не удалось сгенерировать Roadmap — %s", e)
