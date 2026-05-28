@@ -69,6 +69,16 @@ class TrayApp:
             logger.debug("TrayApp: отключён в конфиге (ui.enabled=false)")
             return
 
+        # На Wayland AppIndicator3 требует gnome-shell-extension-appindicator
+        # и без него дёргает дашборд GNOME — лучше не запускать
+        import os
+        if os.environ.get("XDG_SESSION_TYPE") == "wayland":
+            logger.info(
+                "TrayApp: Wayland-сессия — AppIndicator пропускаем "
+                "(требует gnome-shell-extension-appindicator)"
+            )
+            return
+
         if not self._check_gi():
             logger.warning(
                 "TrayApp: PyGObject недоступен — установи: "
