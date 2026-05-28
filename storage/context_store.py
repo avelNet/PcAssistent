@@ -31,12 +31,16 @@ def _conn() -> sqlite3.Connection:
 
 
 async def _run(fn, *args):
-    """Запустить синхронную функцию в thread pool (только чтение)."""
-    return await asyncio.to_thread(fn, *args)
+    """Запустить синхронную функцию в thread pool под локом.
+    SQLite не поддерживает параллельный доступ через одно соединение —
+    сериализуем все операции, не только запись.
+    """
+    async with _write_lock:
+        return await asyncio.to_thread(fn, *args)
 
 
 async def _run_write(fn, *args):
-    """Запустить синхронную write-функцию под локом (сериализует записи)."""
+    """Алиас для _run — сериализует запись (лок общий с чтением)."""
     async with _write_lock:
         return await asyncio.to_thread(fn, *args)
 
