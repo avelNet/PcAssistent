@@ -286,41 +286,27 @@ async def notify_with_obsidian_action(
 
 async def notify_tasks(tasks: list[dict], prologue: str = "", trigger: str = "") -> None:
     """
-    Одно аккуратное уведомление с задачами дня.
-    Показывает 2 самые важные задачи (сокращённо) + счётчик остальных.
+    Краткое уведомление: сколько задач ждёт в Obsidian.
     """
     if not tasks:
         return
 
-    trigger_labels = {
-        "morning_briefing":  "☀️ Утренний брифинг",
-        "after_work_session": "🏁 Сессия завершена",
-        "user_returned":     "👋 С возвращением",
-        "evening_summary":   "🌙 Итог дня",
-        "manual":            "🤖 Анализ готов",
-    }
-    label = trigger_labels.get(trigger, "🤖 PC Assistant")
     total = len(tasks)
-    title = f"{label} — {total} {'задача' if total == 1 else 'задачи' if 2 <= total <= 4 else 'задач'}"
+    high  = sum(1 for t in tasks if t.get("priority") == "HIGH")
 
-    # Топ-2 HIGH → MED → LOW, сокращённо
-    sorted_tasks = sorted(
-        tasks,
-        key=lambda t: {"HIGH": 0, "MED": 1, "LOW": 2}.get(t.get("priority", "LOW"), 3)
-    )
-    lines = []
-    for t in sorted_tasks[:2]:
-        icon = _PRIORITY_ICON.get(t.get("priority", "LOW"), "⚪")
-        lines.append(f"{icon} {_short(t['title'])}")
+    if total == 1:
+        count_str = "1 задача"
+    elif 2 <= total <= 4:
+        count_str = f"{total} задачи"
+    else:
+        count_str = f"{total} задач"
 
-    if total > 2:
-        lines.append(f"  + ещё {total - 2}")
+    title = "🤖 PC Assistant"
+    body  = f"Сегодня {count_str} ждут в Obsidian"
+    if high:
+        body += f" — {high} срочных"
 
-    body = "\n".join(lines)
-    has_high = any(t.get("priority") == "HIGH" for t in sorted_tasks[:2])
-    urgency = "normal" if not has_high else "normal"  # critical мешает автоскрытию
-
-    await notify(title, body, urgency=urgency, timeout_ms=10000, icon="appointment-new")
+    await notify(title, body, urgency="normal", timeout_ms=10000, icon="appointment-new")
 
 
 async def notify_obsidian_written(path: str, note_type: str = "заметка") -> None:

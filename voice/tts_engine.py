@@ -121,7 +121,8 @@ class TTSEngine:
             # 2. Сохранить WAV во временный файл
             fd, tmp_str = tempfile.mkstemp(suffix=".wav", prefix="pc-assistant-tts-")
             tmp_path = Path(tmp_str)
-            import os; os.close(fd)
+            import os
+            os.close(fd)
 
             await loop.run_in_executor(None, lambda: tts.save_audio(wav, str(tmp_path)))
 
