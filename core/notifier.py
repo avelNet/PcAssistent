@@ -68,7 +68,7 @@ def _notify_portal_blocking(
         from gi.repository import Gio, GLib
     except Exception as e:
         logger.debug("notifier: gi.repository.Gio недоступен — %s", e)
-        return False, None
+        return False, None, False
 
     clicked = []
     token: list[str] = []
