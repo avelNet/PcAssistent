@@ -28,21 +28,29 @@ logger = logging.getLogger(__name__)
 def _parse_done_state(content: str) -> dict[str, dict]:
     """
     Парсит выполненные задачи из markdown.
-    Возвращает: {task_id: {"done_by": str}} для всех [x] задач с id.
-    Сохраняет и атрибуцию ассистента если есть <!-- ✓ ... -->.
+    Возвращает: {task_id: {"done_by": str, "title": str}} для всех [x] задач.
+    Ключ — id если есть, иначе нормализованный заголовок.
+    Сохраняет атрибуцию ассистента если есть <!-- ✓ ... -->.
     """
     result = {}
     for line in content.splitlines():
         m = re.match(
-            r'\s*-\s+\[x\]\s+.+<!--\s+id:([^>]+?)\s+-->'
-            r'(?:\s+<!--\s+✓\s+([^>]+?)\s+-->)?',
+            r'\s*-\s+\[x\]\s+(.+?)(?:\s+<!--\s+id:([^>]+?)\s+-->)?'
+            r'(?:\s+<!--\s+✓\s+([^>]+?)\s+-->)?\s*$',
             line,
         )
         if m:
-            task_id = m.group(1).strip()
-            done_by = (m.group(2) or "").strip()
-            result[task_id] = {"done_by": done_by}
+            title   = m.group(1).strip()
+            task_id = (m.group(2) or "").strip()
+            done_by = (m.group(3) or "").strip()
+            key = task_id if task_id else _norm_title(title)
+            result[key] = {"done_by": done_by, "title": title}
     return result
+
+
+def _norm_title(title: str) -> str:
+    """Нормализованный заголовок для fuzzy-сравнения (lowercase + trim)."""
+    return re.sub(r'\s+', ' ', title.lower().strip())
 
 # Триггеры где создаём новую дейли (а не дозаписываем)
 _MORNING_TRIGGERS = {
@@ -163,11 +171,21 @@ class TaskSyncer:
             except Exception as e:
                 logger.debug("TaskSyncer: не удалось прочитать существующий файл: %s", e)
 
+        # Строим индекс по нормализованным заголовкам для fuzzy-match
+        # (нужен когда LLM генерирует новый UUID но тот же заголовок)
+        done_by_title = {
+            _norm_title(v.get("title", k)): v
+            for k, v in done_state.items()
+        }
+
         for task in tasks:
-            tid = task.get("id", "")
-            if tid in done_state:
+            tid   = task.get("id", "")
+            title = task.get("title", "")
+            # Приоритет: match по ID, потом по заголовку
+            match = done_state.get(tid) or done_by_title.get(_norm_title(title))
+            if match:
                 task["done"] = True
-                task["done_by"] = done_state[tid].get("done_by", "")
+                task["done_by"] = match.get("done_by", "")
 
         content = self.client._build_task_list(tasks, prologue, project)
 
