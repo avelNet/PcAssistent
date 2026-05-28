@@ -106,6 +106,11 @@ async def run_trigger(config: dict, trigger: str) -> None:
         except asyncio.TimeoutError:
             logger.error("Таймаут: LLM не ответила за 10 минут")
 
+        # Даём время фоновым задачам завершиться:
+        # открытие Obsidian (~3с), уведомления, project_writer
+        # Пользователь видит результат и может кликнуть уведомление
+        await asyncio.sleep(30)
+
     await orchestrator.stop()
 
 
