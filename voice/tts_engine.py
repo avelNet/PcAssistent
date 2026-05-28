@@ -122,10 +122,10 @@ class TTSEngine:
             speaker = self.silero_speaker
 
             def _synthesize():
-                import torch
                 import numpy as np
                 import scipy.io.wavfile as wavfile
-                import tempfile, os
+                import tempfile
+                import os
 
                 audio = model.apply_tts(text=text, speaker=speaker, sample_rate=sr)
                 data  = (audio.numpy() * 32767).astype(np.int16)
