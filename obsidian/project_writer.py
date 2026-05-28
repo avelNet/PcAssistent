@@ -96,6 +96,7 @@ class ProjectWriter:
         self,
         new_project: str,
         config: dict,
+        branch: Optional[str] = None,
     ) -> None:
         """
         При переключении фокуса на new_project — прочитать накопленные фоновые
@@ -107,7 +108,17 @@ class ProjectWriter:
 
         daily = self.shared_root / new_project / "Daily" / f"{_today_str()}.md"
         if not daily.exists():
-            logger.debug("ProjectWriter: нет фоновых задач для '%s'", new_project)
+            # Озвучим хотя бы факт переключения с указанием ветки
+            branch_str = f" на ветке {branch}" if branch else ""
+            try:
+                from voice.speech_output import SpeechOutput
+                sp = SpeechOutput(config)
+                await sp.tts.speak(
+                    f"Переключаюсь на проект {new_project}{branch_str}. "
+                    f"Задачи ещё не подготовлены — сейчас проанализирую."
+                )
+            except Exception:
+                pass
             return
 
         try:
@@ -128,15 +139,18 @@ class ProjectWriter:
             return
 
         logger.info(
-            "ProjectWriter: озвучиваю %d фоновых задач для '%s'",
-            len(tasks), new_project
+            "ProjectWriter: озвучиваю %d фоновых задач для '%s' (ветка=%s)",
+            len(tasks), new_project, branch or "?"
         )
 
         try:
             from voice.speech_output import SpeechOutput
             sp = SpeechOutput(config)
-            # Краткий пролог о переключении
-            prologue = f"Переключаюсь на проект {new_project}. Вот задачи которые я подготовил в фоне:"
+            branch_str = f" на ветке {branch}" if branch else ""
+            prologue = (
+                f"Переключаюсь на проект {new_project}{branch_str}. "
+                f"Вот задачи которые я подготовил в фоне:"
+            )
             await sp.speak_tasks(tasks, prologue=prologue, trigger="focus_switch")
         except Exception as e:
             logger.warning("ProjectWriter: TTS ошибка при переключении фокуса: %s", e)

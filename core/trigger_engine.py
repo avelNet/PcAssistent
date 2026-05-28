@@ -264,13 +264,19 @@ class TriggerEngine:
             if (current_focus
                     and current_focus != self._last_known_focus
                     and self._last_known_focus is not None):
+                # Находим ветку git нового проекта для голосового анонса
+                branch = None
+                snap = await self.context_builder.get_project_snapshot(current_focus)
+                if snap:
+                    branch = snap.get("branch")
+
                 logger.info(
-                    "TriggerEngine: переключение фокуса %s → %s, анонсирую фоновые задачи",
-                    self._last_known_focus, current_focus
+                    "TriggerEngine: переключение фокуса %s → %s (ветка=%s), анонсирую",
+                    self._last_known_focus, current_focus, branch or "?"
                 )
                 asyncio.create_task(
                     self._project_writer.announce_focus_switch(
-                        current_focus, self._full_config
+                        current_focus, self._full_config, branch=branch
                     ),
                     name="focus_switch_announce",
                 )
