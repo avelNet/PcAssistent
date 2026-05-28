@@ -143,12 +143,46 @@ class ProjectWriter:
             len(tasks), new_project, branch or "?"
         )
 
+        # Уведомление о переключении — СРАЗУ через await
+        # (create_task без strong reference Python GC может убить до запуска)
+        try:
+            from core.notifier import notify, notify_tasks
+            branch_str = f" ({branch})" if branch else ""
+            await notify(
+                f"🎯 Переключаюсь на {new_project}{branch_str}",
+                f"{len(tasks)} накопленных задач",
+                urgency="normal",
+                timeout_ms=8000,
+                icon="appointment-new",
+            )
+        except Exception as e:
+            logger.debug("ProjectWriter: notify (переключение) ошибка — %s", e)
+
+        # Уведомление о задачах — через 3 сек кликабельное (XDG portal)
+        # Сохраняем reference в self чтобы GC не убил task
+        try:
+            from core.notifier import notify_tasks
+            import asyncio as _aio
+
+            async def _delayed_task_notify():
+                await _aio.sleep(3)
+                await notify_tasks(
+                    tasks, prologue="", trigger="focus_switch",
+                    obsidian_path=str(daily),
+                )
+
+            self._pending_focus_notify = _aio.create_task(
+                _delayed_task_notify(), name="focus_switch_tasks_notify"
+            )
+        except Exception as e:
+            logger.debug("ProjectWriter: notify (задачи) ошибка — %s", e)
+
         try:
             from voice.speech_output import SpeechOutput
             sp = SpeechOutput(config)
-            branch_str = f" на ветке {branch}" if branch else ""
+            branch_str_voice = f" на ветке {branch}" if branch else ""
             prologue = (
-                f"Переключаюсь на проект {new_project}{branch_str}. "
+                f"Переключаюсь на проект {new_project}{branch_str_voice}. "
                 f"Вот задачи которые я подготовил в фоне:"
             )
             await sp.speak_tasks(tasks, prologue=prologue, trigger="focus_switch")

@@ -286,9 +286,16 @@ async def notify_with_obsidian_action(
             logger.debug("notifier: %s ошибка — %s", cmd[0], e)
 
 
-async def notify_tasks(tasks: list[dict], prologue: str = "", trigger: str = "") -> None:
+async def notify_tasks(
+    tasks: list[dict],
+    prologue: str = "",
+    trigger: str = "",
+    obsidian_path: str | Path | None = None,
+) -> None:
     """
     Краткое уведомление: сколько задач ждёт в Obsidian.
+    Если задан obsidian_path — кликабельное (через XDG portal):
+    клик открывает файл в Obsidian и поднимает окно через activation token.
     """
     if not tasks:
         return
@@ -308,7 +315,21 @@ async def notify_tasks(tasks: list[dict], prologue: str = "", trigger: str = "")
     if high:
         body += f" — {high} срочных"
 
-    await notify(title, body, urgency="normal", timeout_ms=10000, icon="appointment-new")
+    if obsidian_path:
+        # Кликабельное уведомление — fire-and-forget (внутри ждёт клик до 120с)
+        # Сохраняем reference в module-level set чтобы GC не убил task
+        task = asyncio.create_task(
+            notify_with_obsidian_action(title, body, obsidian_path=obsidian_path),
+            name="notify_tasks_clickable",
+        )
+        _pending_notify_tasks.add(task)
+        task.add_done_callback(_pending_notify_tasks.discard)
+    else:
+        await notify(title, body, urgency="normal", timeout_ms=10000, icon="appointment-new")
+
+
+# Хранилище activated кликабельных уведомлений — strong reference от GC
+_pending_notify_tasks: set[asyncio.Task] = set()
 
 
 async def notify_obsidian_written(path: str, note_type: str = "заметка") -> None:

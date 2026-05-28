@@ -24,6 +24,12 @@ logger = logging.getLogger(__name__)
 
 
 class TTSEngine:
+    # Shared instances на уровне класса — модель грузится один раз на весь процесс,
+    # а не для каждого SpeechOutput отдельно (358 МБ Silero × N — недопустимо)
+    _shared_silero: Optional[Any] = None
+    _shared_silero_lock: Optional[asyncio.Lock] = None
+    _shared_supertonic: Optional[Any] = None
+
     def __init__(self, config: dict):
         voice_cfg = config.get("voice", {})
         self.enabled:     bool = voice_cfg.get("enabled", False)
@@ -42,6 +48,18 @@ class TTSEngine:
 
         self._supertonic_instance: Optional[Any] = None
         self._silero_instance:     Optional[Any] = None
+
+    async def warmup(self) -> None:
+        """Предзагрузить модель TTS чтобы первый speak() не задерживался."""
+        if not self.enabled:
+            return
+        try:
+            if self.engine == "silero":
+                await self._get_silero()
+            elif self.engine == "supertonic":
+                await self._get_supertonic()
+        except Exception as e:
+            logger.debug("tts: warmup ошибка — %s", e)
 
     # ─────────────────────────────────────────────────────── public API ──
 
@@ -90,8 +108,19 @@ class TTSEngine:
     # ─────────────────────────────────────────────────── silero engine ──
 
     async def _get_silero(self) -> Any:
-        """Lazy-инициализация Silero v4 (модель грузится один раз ~40MB)."""
-        if self._silero_instance is None:
+        """Lazy-инициализация Silero v4 — общая для всех TTSEngine в процессе."""
+        if TTSEngine._shared_silero is not None:
+            return TTSEngine._shared_silero
+
+        # Lock на случай если несколько задач одновременно вызвали _get_silero
+        if TTSEngine._shared_silero_lock is None:
+            TTSEngine._shared_silero_lock = asyncio.Lock()
+
+        async with TTSEngine._shared_silero_lock:
+            # Повторная проверка под локом
+            if TTSEngine._shared_silero is not None:
+                return TTSEngine._shared_silero
+
             loop = asyncio.get_event_loop()
 
             def _init():
@@ -107,9 +136,9 @@ class TTSEngine:
                 return model
 
             logger.info("tts: инициализация Silero v4 (первый запуск — загрузка модели)...")
-            self._silero_instance = await loop.run_in_executor(None, _init)
+            TTSEngine._shared_silero = await loop.run_in_executor(None, _init)
             logger.info("tts: Silero готов (голос=%s)", self.silero_speaker)
-        return self._silero_instance
+            return TTSEngine._shared_silero
 
     async def _speak_silero(self, text: str) -> None:
         """Silero: синтез в thread-executor → WAV → aplay."""
@@ -146,8 +175,11 @@ class TTSEngine:
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
-            await asyncio.wait_for(aplay_proc.wait(), timeout=dur_sec + 10)
-            logger.debug("tts: silero озвучил %d символов (%.1f сек)", len(text), dur_sec)
+            ret = await asyncio.wait_for(aplay_proc.wait(), timeout=dur_sec + 10)
+            if ret == 0:
+                logger.info("tts: silero сыграл %d симв за %.1fс", len(text), dur_sec)
+            else:
+                logger.warning("tts: aplay вернул код %d — проверь звук в systemd", ret)
 
         except asyncio.TimeoutError:
             logger.warning("tts: silero timeout")

@@ -85,22 +85,30 @@ class JetBrainsWatcher:
 
     def _detect_active_project(self, projects: list[dict]) -> str | None:
         """
-        Определить активный сейчас проект по самому свежему mtime workspace.xml.
-        JetBrains обновляет workspace.xml при любых изменениях UI — это лучший
-        сигнал что проект реально открыт прямо сейчас.
-        Если нет workspace.xml ни у одного — None.
+        Определить активный сейчас проект по самому свежему mtime файлов в .idea/.
+        Берём максимум среди всех файлов директории — workspace.xml сохраняется
+        лениво, но другие файлы (modules.xml, индексы, caches) могут обновляться
+        быстрее при работе с проектом.
         """
         best_name: str | None = None
         best_mtime: float = 0.0
         for p in projects:
-            ws = Path(p.get("path", "")) / ".idea" / "workspace.xml"
+            idea_dir = Path(p.get("path", "")) / ".idea"
+            if not idea_dir.is_dir():
+                continue
             try:
-                m = ws.stat().st_mtime
-                if m > best_mtime:
-                    best_mtime = m
-                    best_name = p.get("name")
+                # Максимальный mtime среди файлов в .idea/ (без рекурсии)
+                m = max(
+                    (f.stat().st_mtime for f in idea_dir.iterdir() if f.is_file()),
+                    default=0.0,
+                )
+                # Также берём mtime самой директории (обновляется при создании файлов)
+                m = max(m, idea_dir.stat().st_mtime)
             except OSError:
                 continue
+            if m > best_mtime:
+                best_mtime = m
+                best_name = p.get("name")
         return best_name
 
     def _read_all(self) -> dict:

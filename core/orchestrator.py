@@ -196,6 +196,13 @@ class Orchestrator:
             if focus:
                 await self.bus.emit("trigger.rollover", {"project": focus})
 
+            # 7i. Прогрев TTS в фоне — модель ~358 MB, грузится 5 сек,
+            # первый speak() без прогрева теряет начало фразы
+            from voice.speech_output import SpeechOutput
+            sp = SpeechOutput(self.config)
+            asyncio.create_task(sp.tts.warmup(), name="tts_warmup")
+
+
         # 8. Подписка на результат LLM (для логирования в Day 1)
         self.bus.on("llm.completed", self._on_llm_completed)
 

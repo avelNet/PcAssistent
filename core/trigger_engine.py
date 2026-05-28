@@ -44,8 +44,11 @@ class TriggerEngine:
         self._morning_done_date: date | None = None
         self._evening_done_date: date | None = None
 
-        # Отслеживаем переключения фокуса для анонса фоновых задач
-        self._last_known_focus: str | None = None
+        # Отслеживаем переключения фокуса для анонса фоновых задач.
+        # Инициализируем из focus.json сразу — иначе JetBrainsWatcher может
+        # успеть сменить focus до того как мы запомним старое значение.
+        from storage.focus_store import get_focus as _get_focus
+        self._last_known_focus: str | None = _get_focus()
 
         # Документация проекта в Obsidian
         self._project_writer = ProjectWriter(config)
@@ -115,6 +118,8 @@ class TriggerEngine:
         """
         IDE сменила активный проект → автоматически переключаем фокус
         и запускаем LLM-цикл с новым проектом (если auto_focus_from_ide=true).
+        Работает для любых JetBrains-проектов, не только git-репозиториев в
+        ~/Development/ — поддерживает приватные репо, чужие папки и т.д.
         """
         if not data:
             return
@@ -125,16 +130,6 @@ class TriggerEngine:
 
         new_active = data.get("active_project")
         if not new_active:
-            return
-
-        # Проверяем что это известный git-репозиторий
-        from llm.context_builder import ContextBuilder  # noqa: F401
-        known = await self.context_builder.get_known_projects()
-        if new_active not in known:
-            logger.debug(
-                "TriggerEngine: IDE открыт '%s', но это не git-репозиторий — пропускаем",
-                new_active
-            )
             return
 
         from storage.focus_store import get_focus, set_focus
@@ -262,8 +257,7 @@ class TriggerEngine:
             # 1b. Проверяем переключение фокуса — анонсируем фоновые задачи нового проекта
             current_focus = context.get("focus")
             if (current_focus
-                    and current_focus != self._last_known_focus
-                    and self._last_known_focus is not None):
+                    and current_focus != self._last_known_focus):
                 # Находим ветку git нового проекта для голосового анонса
                 branch = None
                 snap = await self.context_builder.get_project_snapshot(current_focus)
@@ -347,15 +341,38 @@ class TriggerEngine:
             # Даём Obsidian-запись завершиться до старта TTS
             await asyncio.sleep(0.5)
 
-            # 11. Голос (после Obsidian — TTS занимает ~60с, не блокируем запись)
+            # 11. Голос — стартуем в фоне, не блокируем
             from voice.speech_output import SpeechOutput
             if voice:
                 sp = SpeechOutput(self._full_config)
-                await sp.speak_tasks(tasks, prologue=prologue, trigger=trigger)
+                asyncio.create_task(
+                    sp.speak_tasks(tasks, prologue=prologue, trigger=trigger),
+                    name="speak_tasks",
+                )
 
-            # 12. Desktop-уведомление — после TTS чтобы не перекрывать речь
+            # 12. Уведомление — кликабельное (XDG portal с кнопкой "Открыть Obsidian")
+            # Задержка 3 сек если голос — чтобы появилось одновременно с речью
             from core.notifier import notify_tasks
-            await notify_tasks(tasks, prologue=prologue, trigger=trigger)
+
+            # Путь к Daily файлу активного проекта для клика → Obsidian
+            obsidian_path = None
+            if current_focus and self._project_writer.shared_root:
+                from datetime import date as _date
+                daily_folder = self._full_config.get("obsidian", {}).get("daily_folder", "Daily")
+                obsidian_path = str(
+                    self._project_writer.shared_root / current_focus
+                    / daily_folder / f"{_date.today().strftime('%d.%m.%Y')}.md"
+                )
+
+            async def _delayed_notify():
+                if voice:
+                    await asyncio.sleep(3)
+                await notify_tasks(
+                    tasks, prologue=prologue, trigger=trigger,
+                    obsidian_path=obsidian_path,
+                )
+
+            asyncio.create_task(_delayed_notify(), name="notify_tasks")
 
             # 13. Детектируем возможно-выполненные задачи и планируем авто-завершение
             possibly_done = self._find_possibly_done_tasks(tasks, context)
