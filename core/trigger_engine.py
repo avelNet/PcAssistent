@@ -144,21 +144,22 @@ class TriggerEngine:
         morning_hour = self.config.get("morning_hour", 9)
         evening_hour = self.config.get("evening_hour", 19)
 
-        # Утренний брифинг — один раз в день в morning_hour
-        if (hour == morning_hour
+        # Утренний брифинг — один раз в день начиная с morning_hour
+        # >= чтобы не пропускать если комп включили позже 9 утра
+        if (hour >= morning_hour
                 and self._morning_done_date != today
                 and not self._is_locked):
             self._morning_done_date = today
-            logger.info("TriggerEngine: утренний брифинг (%d:xx)", morning_hour)
-            # Перенос незакрытых задач активного проекта на новый день (до LLM)
+            logger.info("TriggerEngine: утренний брифинг (%d:xx, запланирован на %d:xx)",
+                        hour, morning_hour)
             from storage.focus_store import get_focus
             focus = get_focus()
             if focus:
                 await self.bus.emit("trigger.rollover", {"project": focus})
             await self._try_run("morning_briefing", voice=True)
 
-        # Вечерний итог — один раз в день в evening_hour
-        elif (hour == evening_hour
+        # Вечерний итог — один раз в день начиная с evening_hour
+        elif (hour >= evening_hour
               and self._evening_done_date != today
               and not self._is_locked):
             self._evening_done_date = today
