@@ -64,16 +64,84 @@ class ClipboardWatcher:
         self._history:     deque[dict] = deque(maxlen=self._max_history)
         self._seen_hashes: set[str]   = set()
         self._task:        asyncio.Task | None = None
-        self._cmd:         list[str] | None    = None  # рабочая команда
+        self._cmd:         list[str] | None    = None  # рабочая команда (для X11 polling)
+        self._wl_proc:     asyncio.subprocess.Process | None = None  # для Wayland watch
 
     async def start(self) -> None:
-        self._task = asyncio.create_task(self._poll_loop(), name="clipboard_watcher")
-        logger.info("ClipboardWatcher: запущен [interval=%ds]", self._interval)
+        # На Wayland используем wl-paste --watch (event-driven, не polling)
+        # — иначе каждый запуск wl-paste создаёт временное окно которое
+        # дёргает GNOME Shell (видно как мерцание иконок в доке)
+        if os.environ.get("WAYLAND_DISPLAY"):
+            self._task = asyncio.create_task(
+                self._watch_wayland(), name="clipboard_watcher_wl"
+            )
+            logger.info("ClipboardWatcher: запущен [Wayland event-driven]")
+        else:
+            self._task = asyncio.create_task(
+                self._poll_loop(), name="clipboard_watcher_poll"
+            )
+            logger.info("ClipboardWatcher: запущен [X11 polling, interval=%ds]", self._interval)
 
     def stop(self) -> None:
+        if self._wl_proc and self._wl_proc.returncode is None:
+            try:
+                self._wl_proc.terminate()
+            except Exception:
+                pass
         if self._task:
             self._task.cancel()
         logger.info("ClipboardWatcher: остановлен")
+
+    async def _watch_wayland(self) -> None:
+        """
+        wl-paste --watch cat — один долгоживущий процесс.
+        При каждом изменении буфера выдаёт его содержимое в stdout.
+        Никаких polling, никаких временных окон.
+        """
+        try:
+            self._wl_proc = await asyncio.create_subprocess_exec(
+                "wl-paste", "--watch", "cat",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            logger.warning(
+                "ClipboardWatcher: wl-paste не найден — "
+                "sudo apt install wl-clipboard"
+            )
+            return
+
+        # Читаем stdout порциями. wl-paste пишет всё содержимое и не вставляет
+        # разделитель — определяем границы по EOF / большим паузам.
+        buffer = bytearray()
+
+        try:
+            while True:
+                try:
+                    chunk = await asyncio.wait_for(
+                        self._wl_proc.stdout.read(65536),
+                        timeout=0.5,
+                    )
+                except asyncio.TimeoutError:
+                    # Пауза — флашим буфер если что-то накопилось
+                    if buffer:
+                        text = buffer.decode("utf-8", errors="replace")
+                        self._process(text)
+                        buffer.clear()
+                    continue
+
+                if not chunk:  # EOF — процесс умер
+                    logger.debug("ClipboardWatcher: wl-paste завершился")
+                    break
+
+                buffer.extend(chunk)
+                # Если накопили достаточно — обрабатываем сразу
+                if len(buffer) > 1_000_000:  # 1MB защита от утечки
+                    buffer.clear()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("ClipboardWatcher: ошибка чтения wl-paste", exc_info=True)
 
     def get_history(self, limit: int = 10) -> list[dict]:
         items = list(self._history)
