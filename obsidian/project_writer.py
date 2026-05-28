@@ -253,26 +253,43 @@ class ProjectWriter:
         git_snapshot: Optional[dict],
         errors: Optional[list],
     ) -> None:
-        """Dev Log/DD.MM.YYYY.md — дозаписываем сессию."""
+        """
+        Dev Log/DD.MM.YYYY.md — дозаписываем сессию.
+        Не пишем если коммиты и ошибки не изменились с прошлой записи.
+        """
         today = _today_str()
         dev_log_dir = root / "Dev Log"
         path = dev_log_dir / f"{today}.md"
-        entry = self._build_dev_log_entry(git_snapshot, errors)
+
+        # Последний хеш коммита из снапшота
+        last_commit_hash = ""
+        if git_snapshot:
+            log = git_snapshot.get("recent_log", "")
+            last_commit_hash = log.splitlines()[0][:7] if log.strip() else ""
 
         def _write():
             dev_log_dir.mkdir(parents=True, exist_ok=True)
+            # Проверяем: если файл существует и уже содержит этот коммит — не пишем
+            if path.exists() and last_commit_hash:
+                existing = path.read_text(encoding="utf-8")
+                if last_commit_hash in existing:
+                    return False  # ничего нового
+
             if not path.exists():
-                # Создаём файл с заголовком
                 header = (
                     f"---\ndate: {today}\nproject: {project}\ntype: dev-log\n---\n\n"
                     f"# 🛠 Dev Log — {_today_display()}\n"
                 )
                 path.write_text(header, encoding="utf-8")
+
+            entry = self._build_dev_log_entry(git_snapshot, errors)
             with open(path, "a", encoding="utf-8") as f:
                 f.write(entry)
+            return True
 
-        await asyncio.to_thread(_write)
-        logger.debug("ProjectWriter: Dev Log/%s.md обновлён", today)
+        written = await asyncio.to_thread(_write)
+        if written:
+            logger.debug("ProjectWriter: Dev Log/%s.md — новая запись", today)
 
     # ─── Авто-завершение задач ───────────────────────────────────────────────
 
