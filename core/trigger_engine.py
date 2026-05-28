@@ -343,6 +343,10 @@ class TriggerEngine:
                 name="background_analysis",
             )
 
+            # 16. Сигнал: весь цикл завершён (TTS сыгран, уведомления отправлены)
+            #     Используется run_trigger чтобы не выходить раньше времени
+            await self.bus.emit("llm.all_done", {"trigger": trigger})
+
         except Exception as e:
             # Ловим OllamaError, OpenRouterError и любые другие ошибки LLM
             logger.error("TriggerEngine: ошибка LLM — %s", e)

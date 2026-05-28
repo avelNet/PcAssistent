@@ -89,27 +89,28 @@ async def run_trigger(config: dict, trigger: str) -> None:
     logger = logging.getLogger(__name__)
     orchestrator = Orchestrator(config)
 
-    # Ждём llm.completed вместо фиксированного sleep
-    done_event = asyncio.Event()
-    def _on_llm_done(data):
-        done_event.set()
-    orchestrator.bus.on("llm.completed", _on_llm_done)
+    # llm.all_done — финальный сигнал: TTS сыгран, уведомления отправлены
+    all_done_event = asyncio.Event()
+    def _on_all_done(data):
+        all_done_event.set()
+    orchestrator.bus.on("llm.all_done", _on_all_done)
 
     await orchestrator.start()
 
     logger.info("Запускаю триггер: %s", trigger)
     if orchestrator.trigger_engine:
         await orchestrator.trigger_engine.trigger_manual()
-        # Ждём завершения LLM — таймаут 10 минут (CPU-only может быть медленным)
+
+        # Ждём пока TTS доиграет и все уведомления отправятся
         try:
-            await asyncio.wait_for(done_event.wait(), timeout=600)
+            await asyncio.wait_for(all_done_event.wait(), timeout=600)
         except asyncio.TimeoutError:
             logger.error("Таймаут: LLM не ответила за 10 минут")
 
-        # Даём время фоновым задачам завершиться:
-        # открытие Obsidian (~3с), уведомления, project_writer
-        # Пользователь видит результат и может кликнуть уведомление
-        await asyncio.sleep(30)
+        # Даём время фоновым задачам: открытие Obsidian (~5с),
+        # portal-уведомление (~2с чтобы появилось), project_writer
+        logger.info("run_trigger: LLM завершён, ждём фоновые задачи...")
+        await asyncio.sleep(15)
 
     await orchestrator.stop()
 
