@@ -16,10 +16,9 @@ productivity/session_tracker.py — накапливает события от f
 Хранит в памяти для текущей сессии; stats_builder читает напрямую.
 """
 
-import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from core.event_bus import EventBus
@@ -93,7 +92,7 @@ class SessionTracker:
 
     def get_stats(self) -> dict:
         """Вернуть текущие метрики сессии."""
-        total_focus = self._minutes["deep_work"] + self._minutes["shallow_work"]
+        _total_focus = self._minutes["deep_work"] + self._minutes["shallow_work"]
         avg_focus = (
             sum(self._focus_durations) / len(self._focus_durations)
             if self._focus_durations else 0.0

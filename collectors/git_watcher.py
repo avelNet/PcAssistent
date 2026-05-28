@@ -10,7 +10,6 @@ git_watcher.py — следит за git-репозиториями через i
 
 import asyncio
 import logging
-import os
 from pathlib import Path
 
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
@@ -184,7 +183,7 @@ class GitWatcher:
 
         branch = git(["branch", "--show-current"]) or "HEAD detached"
         uncommitted = git(["status", "--porcelain"])
-        uncommitted_count = len([l for l in uncommitted.splitlines() if l.strip()])
+        uncommitted_count = len([line for line in uncommitted.splitlines() if line.strip()])
 
         last_commit_raw = git(["log", "-1", "--format=%H|%s|%ai"])
         last_commit = {}

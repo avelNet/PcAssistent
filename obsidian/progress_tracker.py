@@ -12,8 +12,7 @@ LLM использует это чтобы не предлагать завед�
 
 import logging
 from collections import defaultdict
-from datetime import date, timedelta
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from storage import context_store
 

@@ -134,7 +134,7 @@ class ConsoleChat:
 
     async def _natural_message(self, text: str) -> None:
         """Обработать свободный текст."""
-        from storage.focus_store import set_focus, get_focus
+        from storage.focus_store import set_focus
 
         text_lower = text.lower()
 
@@ -160,7 +160,7 @@ class ConsoleChat:
         for phrase in ["не трогаем", "игнорируй", "не учитывай"]:
             if phrase in text_lower:
                 self._extra_context += f"\nПользователь: {text}"
-                print(f"📝 Учту в следующем запросе")
+                print("📝 Учту в следующем запросе")
                 return
 
         # Вопрос (заканчивается на ?) → немедленный запуск LLM
@@ -176,7 +176,7 @@ class ConsoleChat:
 
         # Всё остальное — накапливаем как контекст
         self._extra_context += f"\nКонтекст от пользователя: {text}"
-        print(f"📝 Добавлено в контекст. /run — запустить анализ, /clear — сбросить")
+        print("📝 Добавлено в контекст. /run — запустить анализ, /clear — сбросить")
 
     async def _show_status(self) -> None:
         """Показать текущее состояние системы."""

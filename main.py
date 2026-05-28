@@ -151,7 +151,7 @@ async def run_check(config: dict) -> None:
             if provider == "ollama":
                 print(f"  Запусти: ollama serve && ollama pull {model}")
             elif provider == "openrouter":
-                print(f"  Проверь openrouter.api_key в config.yaml")
+                print("  Проверь openrouter.api_key в config.yaml")
             all_ok = False
         await llm.close()
     except Exception as e:

@@ -6,7 +6,6 @@ voice/speech_output.py — высокоуровневый интерфейс о�
 """
 
 import logging
-from typing import Optional
 
 from voice.tts_engine import TTSEngine
 

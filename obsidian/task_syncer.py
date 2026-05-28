@@ -14,7 +14,7 @@ import asyncio
 import logging
 import re
 import uuid
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 

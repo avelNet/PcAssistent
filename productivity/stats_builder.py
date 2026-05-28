@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     from productivity.session_tracker import SessionTracker
     from collectors.git_watcher import GitWatcher
-    from storage.context_store import ContextStore
 
 
 logger = logging.getLogger(__name__)

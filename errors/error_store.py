@@ -10,7 +10,7 @@ errors/error_store.py — хранение, дедупликация и агре
 import logging
 import time
 from collections import defaultdict
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from storage import context_store
 

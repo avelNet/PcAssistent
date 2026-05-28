@@ -223,7 +223,6 @@ async def notify_with_obsidian_action(
     Использует XDG Portal для получения activation token → Obsidian получает фокус на Wayland.
     """
     import urllib.parse
-    import subprocess
 
     path_str = str(obsidian_path) if obsidian_path else None
 

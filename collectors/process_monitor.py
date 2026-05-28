@@ -17,7 +17,6 @@ process_monitor.py — мониторинг состояния пользова�
 
 import asyncio
 import logging
-import re
 import subprocess
 import time
 from dataclasses import dataclass, field

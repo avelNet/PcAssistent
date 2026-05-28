@@ -2,7 +2,6 @@
 prompt_engine.py — формирует промпты для LLM под каждый тип триггера.
 """
 
-import json
 import logging
 from datetime import date, datetime
 from pathlib import Path

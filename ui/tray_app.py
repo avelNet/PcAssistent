@@ -25,7 +25,7 @@ ui/tray_app.py — GTK системный трей через AppIndicator3.
 import asyncio
 import logging
 import threading
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from core.event_bus import EventBus
