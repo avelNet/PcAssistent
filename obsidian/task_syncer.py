@@ -93,7 +93,7 @@ class TaskSyncer:
         """
         Записать задачи в Obsidian.
         evening_summary  → дозаписать итог дня (append_evening_summary)
-        остальные        → создать дейли заметку (create_daily_note, не перезаписывает)
+        остальные        → smart merge + перезапись (сохраняем [x] задачи)
         """
         if not tasks:
             return
@@ -114,14 +114,81 @@ class TaskSyncer:
                         "TaskSyncer: вечерний итог записан → '%s'", path
                     )
             else:
-                path = await self.client.create_daily_note(
-                    proj_tasks, prologue=prologue, project=project
-                )
+                # Smart merge: сохраняем [x] задачи, перезаписываем файл
+                if self.client.shared_root:
+                    path = await self._smart_write_daily_fs(
+                        proj_tasks, prologue, project, open_after=True
+                    )
+                else:
+                    path = await self.client.create_daily_note(
+                        proj_tasks, prologue=prologue, project=project
+                    )
                 if path:
                     logger.info(
                         "TaskSyncer: дейли заметка → '%s' (%d задач, trigger=%s)",
                         path, len(proj_tasks), trigger,
                     )
+
+    # ─── Общий хелпер: smart merge + запись в ФС ────────────────────────────
+
+    async def _smart_write_daily_fs(
+        self,
+        tasks: list[dict],
+        prologue: str,
+        project: Optional[str],
+        *,
+        open_after: bool = False,
+    ) -> Optional[str]:
+        """
+        Smart merge + FS write дейли заметки.
+        Читает существующий файл, сохраняет [x] задачи, перезаписывает файл новым контентом.
+        open_after=True — открыть Obsidian после записи (для активного проекта).
+        open_after=False — тихая запись (для фоновых проектов).
+        """
+        if not self.client.shared_root:
+            return None
+
+        fs_path = self.client.daily_path_fs(project)
+
+        done_state: dict[str, dict] = {}
+        if fs_path.exists():
+            try:
+                existing = await asyncio.to_thread(fs_path.read_text, "utf-8")
+                done_state = _parse_done_state(existing)
+                if done_state:
+                    logger.debug(
+                        "TaskSyncer: '%s' — сохраняем %d выполненных задач",
+                        project or "общие", len(done_state)
+                    )
+            except Exception as e:
+                logger.debug("TaskSyncer: не удалось прочитать существующий файл: %s", e)
+
+        for task in tasks:
+            tid = task.get("id", "")
+            if tid in done_state:
+                task["done"] = True
+                task["done_by"] = done_state[tid].get("done_by", "")
+
+        content = self.client._build_task_list(tasks, prologue, project)
+
+        def _write():
+            fs_path.parent.mkdir(parents=True, exist_ok=True)
+            fs_path.write_text(content, encoding="utf-8")
+
+        await asyncio.to_thread(_write)
+
+        done_count = sum(1 for t in tasks if t.get("done"))
+        logger.info(
+            "TaskSyncer: '%s' → %d задач (%d выполнено сохранено)%s",
+            project or "общие", len(tasks), done_count,
+            "" if open_after else " (тихая запись)",
+        )
+
+        if open_after and self.client.auto_open:
+            from core.notifier import open_obsidian_note
+            asyncio.create_task(open_obsidian_note(fs_path))
+
+        return str(fs_path)
 
     # ─── Фоновая запись (другие проекты) ────────────────────────────────────
 
@@ -144,43 +211,13 @@ class TaskSyncer:
         if not self.client.shared_root:
             return
 
-        fs_path = self.client.daily_path_fs(project)
-
-        # ── Слияние: сохраняем выполненные задачи из существующего файла ──
-        # Если пользователь (или ассистент) уже отметил задачу [x] — не теряем.
-        done_state: dict[str, dict] = {}
-        if fs_path.exists():
-            try:
-                existing = await asyncio.to_thread(fs_path.read_text, "utf-8")
-                done_state = _parse_done_state(existing)
-                if done_state:
-                    logger.debug(
-                        "TaskSyncer[bg]: '%s' — сохраняем %d выполненных задач",
-                        project, len(done_state)
-                    )
-            except Exception as e:
-                logger.debug("TaskSyncer[bg]: не удалось прочитать существующий файл: %s", e)
-
-        # Применяем preserved done-статус к задачам от LLM
-        if done_state:
-            for task in tasks:
-                tid = task.get("id", "")
-                if tid in done_state:
-                    task["done"] = True
-                    task["done_by"] = done_state[tid].get("done_by", "")
-
-        content = self.client._build_task_list(tasks, prologue, project)
-
-        def _write():
-            fs_path.parent.mkdir(parents=True, exist_ok=True)
-            fs_path.write_text(content, encoding="utf-8")
-
-        await asyncio.to_thread(_write)
-        done_count = sum(1 for t in tasks if t.get("done"))
-        logger.info(
-            "TaskSyncer[bg]: '%s' → %d задач (%d выполнено сохранено, без уведомления)",
-            project, len(tasks), done_count,
+        path = await self._smart_write_daily_fs(
+            tasks, prologue, project, open_after=False
         )
+        if path:
+            logger.info(
+                "TaskSyncer[bg]: '%s' → без уведомления", project
+            )
 
     # ─── Obsidian → SQLite ───────────────────────────────────────────────────
 

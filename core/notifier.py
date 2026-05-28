@@ -52,15 +52,127 @@ async def notify(
         logger.debug("notifier: ошибка — %s", e)
 
 
+def _notify_portal_blocking(
+    title: str,
+    body: str,
+    obsidian_path: str | None,
+) -> tuple[bool, str | None, bool]:
+    """
+    Уведомление через XDG Desktop Portal (D-Bus).
+    На GNOME 43+: ActionInvoked содержит activation-token → Obsidian может получить фокус.
+    Возвращает (clicked, activation_token).
+    """
+    try:
+        import gi
+        gi.require_version("Gio", "2.0")
+        from gi.repository import Gio, GLib
+    except Exception as e:
+        logger.debug("notifier: gi.repository.Gio недоступен — %s", e)
+        return False, None
+
+    clicked = []
+    token: list[str] = []
+    loop = GLib.MainLoop()
+    sub_id: list[int] = []
+
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    except Exception as e:
+        logger.debug("notifier: не удалось подключиться к session bus — %s", e)
+        return False, None, False
+
+    notif_id = "pc-assistant-focus"
+
+    def on_action_invoked(conn, sender, obj_path, iface, sig, params, _):
+        try:
+            vals = params.unpack()
+            # vals = (id, action) или (id, action, {extra})
+            if len(vals) >= 2 and vals[0] == notif_id:
+                clicked.append(True)
+                if len(vals) >= 3 and isinstance(vals[2], dict):
+                    t = vals[2].get("activation-token")
+                    if t:
+                        token.append(t)
+        except Exception:
+            pass
+        loop.quit()
+
+    sub_id.append(bus.signal_subscribe(
+        None,
+        "org.freedesktop.portal.Notification",
+        "ActionInvoked",
+        "/org/freedesktop/portal/desktop",
+        None,
+        Gio.DBusSignalFlags.NONE,
+        on_action_invoked,
+        None,
+    ))
+
+    # Строим уведомление как Python-dict (GLib создаёт Variant рекурсивно)
+    notification_dict = {
+        "title":    GLib.Variant("s", title),
+        "body":     GLib.Variant("s", body),
+        "priority": GLib.Variant("s", "high"),
+        "buttons":  GLib.Variant("aa{sv}", [
+            {
+                "label":  GLib.Variant("s", "Открыть Obsidian"),
+                "action": GLib.Variant("s", "open"),
+            }
+        ]),
+    }
+
+    try:
+        bus.call_sync(
+            "org.freedesktop.portal.Desktop",
+            "/org/freedesktop/portal/desktop",
+            "org.freedesktop.portal.Notification",
+            "AddNotification",
+            GLib.Variant("(sa{sv})", (notif_id, notification_dict)),
+            None,
+            Gio.DBusCallFlags.NONE,
+            -1,
+            None,
+        )
+    except Exception as e:
+        logger.debug("notifier: portal AddNotification ошибка — %s", e)
+        if sub_id:
+            bus.signal_unsubscribe(sub_id[0])
+        return False, None, False  # портал недоступен — нужен fallback
+
+    GLib.timeout_add_seconds(120, loop.quit)
+    loop.run()
+
+    if sub_id:
+        bus.signal_unsubscribe(sub_id[0])
+
+    # Убираем уведомление
+    try:
+        bus.call_sync(
+            "org.freedesktop.portal.Desktop",
+            "/org/freedesktop/portal/desktop",
+            "org.freedesktop.portal.Notification",
+            "RemoveNotification",
+            GLib.Variant("(s)", (notif_id,)),
+            None,
+            Gio.DBusCallFlags.NONE,
+            -1,
+            None,
+        )
+    except Exception:
+        pass
+
+    # shown=True: уведомление было показано (даже если не кликнули)
+    return bool(clicked), token[0] if token else None, True
+
+
 def _notify_blocking(
     title: str,
     body: str,
     obsidian_path: str | None,
 ) -> bool:
     """
-    Синхронная версия — запускается в отдельном потоке через asyncio.to_thread.
-    Использует gi.repository.Notify + GLib MainLoop для надёжного перехвата клика.
-    Возвращает True если пользователь кликнул на кнопку.
+    Fallback через gi.repository.Notify (libnotify).
+    Используется если XDG Portal недоступен.
     """
     try:
         import gi
@@ -95,7 +207,6 @@ def _notify_blocking(
         logger.debug("notifier: notif.show() ошибка — %s", e)
         return False
 
-    # Таймаут 2 минуты — после этого просто закрываем
     GLib.timeout_add_seconds(120, loop.quit)
     loop.run()
 
@@ -109,45 +220,68 @@ async def notify_with_obsidian_action(
 ) -> None:
     """
     Уведомление с кнопкой «Открыть Obsidian».
-    При клике — открывает файл и фокусирует Obsidian (работает на Wayland).
+    Использует XDG Portal для получения activation token → Obsidian получает фокус на Wayland.
     """
+    import urllib.parse
+    import subprocess
+
     path_str = str(obsidian_path) if obsidian_path else None
 
-    clicked = await asyncio.to_thread(_notify_blocking, title, body, path_str)
+    # Пробуем portal (с activation token)
+    clicked, activation_token, portal_shown = await asyncio.to_thread(
+        _notify_portal_blocking, title, body, path_str
+    )
 
-    if clicked:
-        if path_str:
-            import urllib.parse
-            encoded = urllib.parse.quote(path_str, safe="")
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    "xdg-open", f"obsidian://open?path={encoded}",
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-                await asyncio.wait_for(proc.wait(), timeout=5)
-                await asyncio.sleep(0.8)
-            except Exception:
-                pass
+    # Fallback на libnotify только если портал НЕ смог показать уведомление
+    # (если показал но не кликнули — не показываем второе)
+    if not portal_shown:
+        clicked = await asyncio.to_thread(_notify_blocking, title, body, path_str)
+        activation_token = None
 
-        # Electron фокусирует уже открытый экземпляр при повторном запуске
-        for cmd in (
-            ["snap", "run", "obsidian"],
-            ["gtk-launch", "obsidian_obsidian"],
-            ["obsidian"],
-        ):
-            try:
-                await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-                logger.info("notifier: фокус Obsidian через %s", cmd[0])
-                break
-            except FileNotFoundError:
-                continue
-            except Exception as e:
-                logger.debug("notifier: %s ошибка — %s", cmd[0], e)
+    if not clicked:
+        return
+
+    # Открываем файл внутри Obsidian через URI
+    if path_str:
+        encoded = urllib.parse.quote(path_str, safe="")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "xdg-open", f"obsidian://open?path={encoded}",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(proc.wait(), timeout=5)
+            await asyncio.sleep(0.5)
+        except Exception:
+            pass
+
+    # Фокусируем Obsidian через activation token (Wayland XDG activation)
+    # Electron читает DESKTOP_STARTUP_ID / XDG_ACTIVATION_TOKEN и запрашивает фокус у композитора
+    focus_env = dict(os.environ)
+    if activation_token:
+        focus_env["DESKTOP_STARTUP_ID"] = activation_token
+        focus_env["XDG_ACTIVATION_TOKEN"] = activation_token
+        logger.info("notifier: activation token получен — запрашиваем фокус Obsidian")
+
+    for cmd in (
+        ["snap", "run", "obsidian"],
+        ["gtk-launch", "obsidian_obsidian"],
+        ["obsidian"],
+    ):
+        try:
+            await asyncio.create_subprocess_exec(
+                *cmd,
+                env=focus_env,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            logger.info("notifier: Obsidian запущен через %s (token=%s)",
+                        cmd[0], "да" if activation_token else "нет")
+            break
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            logger.debug("notifier: %s ошибка — %s", cmd[0], e)
 
 
 async def notify_tasks(tasks: list[dict], prologue: str = "", trigger: str = "") -> None:
