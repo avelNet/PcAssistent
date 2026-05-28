@@ -34,10 +34,14 @@ class TTSEngine:
         # supertonic-specific
         self.voice_style: str  = voice_cfg.get("voice_style", "F1")
         self.lang:        str  = voice_cfg.get("lang", "ru")
+        # silero-specific
+        self.silero_speaker:     str  = voice_cfg.get("silero_speaker", "xenia")
+        self.silero_sample_rate: int  = voice_cfg.get("silero_sample_rate", 48000)
         # fallback
         self.fallback:    str  = voice_cfg.get("fallback_engine", "espeak-ng")
 
         self._supertonic_instance: Optional[Any] = None
+        self._silero_instance:     Optional[Any] = None
 
     # ─────────────────────────────────────────────────────── public API ──
 
@@ -46,7 +50,9 @@ class TTSEngine:
         if not self.enabled or not text.strip():
             return
 
-        if self.engine == "supertonic":
+        if self.engine == "silero":
+            await self._speak_silero(text)
+        elif self.engine == "supertonic":
             await self._speak_supertonic(text)
         elif self.engine == "piper" and self._model_path().exists():
             await self._speak_piper(text)
@@ -80,6 +86,84 @@ class TTSEngine:
             return "espeak"
         except FileNotFoundError:
             return "none"
+
+    # ─────────────────────────────────────────────────── silero engine ──
+
+    async def _get_silero(self) -> Any:
+        """Lazy-инициализация Silero v4 (модель грузится один раз ~40MB)."""
+        if self._silero_instance is None:
+            loop = asyncio.get_event_loop()
+
+            def _init():
+                import torch
+                model, _ = torch.hub.load(
+                    repo_or_dir="snakers4/silero-models",
+                    model="silero_tts",
+                    language="ru",
+                    speaker="v4_ru",
+                    verbose=False,
+                    trust_repo=True,
+                )
+                return model
+
+            logger.info("tts: инициализация Silero v4 (первый запуск — загрузка модели)...")
+            self._silero_instance = await loop.run_in_executor(None, _init)
+            logger.info("tts: Silero готов (голос=%s)", self.silero_speaker)
+        return self._silero_instance
+
+    async def _speak_silero(self, text: str) -> None:
+        """Silero: синтез в thread-executor → WAV → aplay."""
+        tmp_path: Optional[Path] = None
+        try:
+            model = await self._get_silero()
+            loop  = asyncio.get_event_loop()
+
+            sr = self.silero_sample_rate
+            speaker = self.silero_speaker
+
+            def _synthesize():
+                import torch
+                import numpy as np
+                import scipy.io.wavfile as wavfile
+                import tempfile, os
+
+                audio = model.apply_tts(text=text, speaker=speaker, sample_rate=sr)
+                data  = (audio.numpy() * 32767).astype(np.int16)
+                fd, path = tempfile.mkstemp(suffix=".wav", prefix="pc-assistant-silero-")
+                os.close(fd)
+                wavfile.write(path, sr, data)
+                duration = len(data) / sr
+                return path, duration
+
+            tmp_str, dur_sec = await asyncio.wait_for(
+                loop.run_in_executor(None, _synthesize),
+                timeout=60,
+            )
+            tmp_path = Path(tmp_str)
+
+            aplay_proc = await asyncio.create_subprocess_exec(
+                "aplay", tmp_str,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(aplay_proc.wait(), timeout=dur_sec + 10)
+            logger.debug("tts: silero озвучил %d символов (%.1f сек)", len(text), dur_sec)
+
+        except asyncio.TimeoutError:
+            logger.warning("tts: silero timeout")
+        except ImportError as e:
+            logger.warning("tts: silero зависимость не установлена — %s. Fallback.", e)
+            await self._speak_fallback(text)
+        except FileNotFoundError:
+            logger.warning("tts: aplay не найден — sudo apt install alsa-utils")
+        except Exception as e:
+            logger.error("tts: silero ошибка — %s", e, exc_info=True)
+        finally:
+            if tmp_path and tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
 
     # ──────────────────────────────────────────────── supertonic engine ──
 
