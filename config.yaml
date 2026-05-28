@@ -35,6 +35,12 @@ collectors:
   jetbrains:
     config_dir: "~/.config/JetBrains"
 
+# Авто-фокус по открытому проекту в JetBrains IDE
+# При открытии нового проекта автоматически переключает фокус и озвучивает
+# накопленные фоновые задачи. Поставь false если хочешь управлять фокусом
+# только через --focus вручную.
+auto_focus_from_ide: true
+
   filesystem:
     watch_dirs:
       - "~/projects"

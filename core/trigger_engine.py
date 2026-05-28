@@ -61,6 +61,7 @@ class TriggerEngine:
         self.bus.on("session.ended", self._on_session_ended)
         self.bus.on("user.returned", self._on_user_returned)
         self.bus.on("process.snapshot", self._on_process_snapshot)
+        self.bus.on("jetbrains.changed", self._on_jetbrains_changed)
         logger.debug("TriggerEngine: подписки установлены")
 
     # ─── Обработчики событий ────────────────────────────────────────────────
@@ -109,6 +110,47 @@ class TriggerEngine:
         logger.info("TriggerEngine: возвращение после %d мин", idle_min)
         await self._try_run("user_returned", voice=True,
                             extra={"idle_was_min": idle_min})
+
+    async def _on_jetbrains_changed(self, data: dict) -> None:
+        """
+        IDE сменила активный проект → автоматически переключаем фокус
+        и запускаем LLM-цикл с новым проектом (если auto_focus_from_ide=true).
+        """
+        if not data:
+            return
+
+        auto_cfg = self._full_config.get("auto_focus_from_ide", True)
+        if not auto_cfg:
+            return
+
+        new_active = data.get("active_project")
+        if not new_active:
+            return
+
+        # Проверяем что это известный git-репозиторий
+        from llm.context_builder import ContextBuilder  # noqa: F401
+        known = await self.context_builder.get_known_projects()
+        if new_active not in known:
+            logger.debug(
+                "TriggerEngine: IDE открыт '%s', но это не git-репозиторий — пропускаем",
+                new_active
+            )
+            return
+
+        from storage.focus_store import get_focus, set_focus
+        current = get_focus()
+        if current == new_active:
+            return  # уже активен
+
+        logger.info(
+            "TriggerEngine: IDE сменил активный проект %s → %s, переключаю фокус",
+            current or "нет", new_active,
+        )
+        set_focus(new_active)
+
+        # Запускаем анализ для нового проекта — внутри _run_llm детектится смена
+        # фокуса и вызывается announce_focus_switch (озвучка накопленных задач)
+        await self._try_run("focus_switch", voice=False, force=True)
 
     def _on_process_snapshot(self, data: dict) -> None:
         """Обновить состояние процессов (синхронный обработчик)."""

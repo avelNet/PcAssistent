@@ -33,7 +33,7 @@ class JetBrainsWatcher:
     Эмитит jetbrains.changed если данные изменились.
     """
 
-    POLL_INTERVAL = 120  # секунд
+    POLL_INTERVAL = 30  # секунд — нужно быстро реагировать на смену активного проекта
 
     def __init__(self, config: dict, bus: "EventBus"):
         cfg = config.get("collectors", {}).get("jetbrains", {})
@@ -83,6 +83,26 @@ class JetBrainsWatcher:
 
     # ─── Парсинг XML ─────────────────────────────────────────────────────────
 
+    def _detect_active_project(self, projects: list[dict]) -> str | None:
+        """
+        Определить активный сейчас проект по самому свежему mtime workspace.xml.
+        JetBrains обновляет workspace.xml при любых изменениях UI — это лучший
+        сигнал что проект реально открыт прямо сейчас.
+        Если нет workspace.xml ни у одного — None.
+        """
+        best_name: str | None = None
+        best_mtime: float = 0.0
+        for p in projects:
+            ws = Path(p.get("path", "")) / ".idea" / "workspace.xml"
+            try:
+                m = ws.stat().st_mtime
+                if m > best_mtime:
+                    best_mtime = m
+                    best_name = p.get("name")
+            except OSError:
+                continue
+        return best_name
+
     def _read_all(self) -> dict:
         """Прочитать все IDE и вернуть объединённый снапшот."""
         projects: list[dict] = []
@@ -122,6 +142,7 @@ class JetBrainsWatcher:
 
         return {
             "projects":   projects[:10],             # топ-10 последних
+            "active_project": self._detect_active_project(projects),  # самый недавний по mtime
             "open_files": list(dict.fromkeys(open_files))[:20],  # дедупликация, топ-20
             "breakpoints": breakpoints[:30],
             "ts": time.time(),
