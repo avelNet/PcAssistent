@@ -416,6 +416,21 @@ class TriggerEngine:
 
             logger.info("TriggerEngine[bg]: '%s' — %d задач записано", project, len(tasks))
 
+            # Создаём структуру документации для фонового проекта (Dashboard, Architecture, Dev Log, Decisions)
+            if self._project_writer.enabled:
+                git_snap = await self.context_builder.get_project_snapshot(project)
+                repo_path = await self.context_builder.get_project_git_path(project)
+                errors = context.get("errors")
+                asyncio.create_task(
+                    self._project_writer.write_project_structure(
+                        project=project,
+                        repo_path=repo_path,
+                        git_snapshot=git_snap,
+                        errors=errors,
+                    ),
+                    name=f"bg_structure_{project}",
+                )
+
         except Exception as e:
             logger.debug("TriggerEngine[bg]: '%s' ошибка: %s", project, e)
 
