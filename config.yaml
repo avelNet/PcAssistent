@@ -46,6 +46,7 @@ collectors:
       - ".venv"
       - "target"
       - ".idea"
+      - "GetCourse"
 
   process:
     interval_sec: 60
