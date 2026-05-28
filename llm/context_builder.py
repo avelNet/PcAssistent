@@ -64,12 +64,15 @@ class ContextBuilder:
         logger.info("ContextBuilder: собираю контекст для триггера '%s'", trigger)
         ctx: dict = {}
 
+        # Фокус определяем ДО сбора данных — нужен для фильтрации ошибок
+        focus = project_override or get_focus()
+
         # Запускаем все источники параллельно
         source_tasks = {
             "git":          self._get_git_context(),
             "history":      self._get_task_history(),
             "today_tasks":  context_store.get_tasks_for_date(),
-            "errors":       context_store.get_errors(hours=24),
+            "errors":       self._get_errors_context(focus),
             "obsidian":     self._get_vault_context(),
             "clipboard":    self._get_clipboard_context(),
             "ide":          self._get_jetbrains_context(),
@@ -89,8 +92,6 @@ class ContextBuilder:
         if extra:
             ctx.update(extra)
 
-        # Фокус: project_override (фоновый режим) > get_focus() (пользовательский)
-        focus = project_override or get_focus()
         if focus:
             ctx["focus"] = focus
             if project_override:
@@ -149,6 +150,26 @@ class ContextBuilder:
 
     async def _get_task_history(self) -> list[dict]:
         return await context_store.get_task_history(days=3)
+
+    async def _get_errors_context(self, focus: str | None) -> list[dict]:
+        """
+        Ошибки только из активного проекта (по пути файла).
+        Без фокуса — возвращаем пустой список: не путаем LLM чужими ошибками.
+        """
+        if not focus:
+            return []
+        all_errors = await context_store.get_errors(hours=24)
+        # Фильтруем: путь файла должен содержать имя проекта
+        project_errors = [
+            e for e in all_errors
+            if focus.lower() in (e.get("file") or "").lower()
+        ]
+        if len(project_errors) < len(all_errors):
+            logger.debug(
+                "ContextBuilder: ошибки отфильтрованы по проекту '%s': %d → %d",
+                focus, len(all_errors), len(project_errors),
+            )
+        return project_errors
 
     async def _get_clipboard_context(self) -> list[dict]:
         """Последние записи буфера обмена."""
