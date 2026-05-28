@@ -6,7 +6,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 %h/Development/PcAssistent/main.py
+ExecStart=%h/Development/PcAssistent/.venv/bin/python3 %h/Development/PcAssistent/main.py
 WorkingDirectory=%h/Development/PcAssistent
 Restart=on-failure
 RestartSec=30
