@@ -54,12 +54,19 @@ class ProjectWriter:
 
     # ─── Публичный API ───────────────────────────────────────────────────────
 
+    def roadmap_exists(self, project: str) -> bool:
+        """Проверить существует ли уже Roadmap.md для проекта."""
+        if not self.shared_root:
+            return True  # нет vault — не создаём
+        return (self.project_root(project) / "Roadmap.md").exists()
+
     async def write_project_structure(
         self,
         project: str,
         repo_path: Optional[str] = None,
         git_snapshot: Optional[dict] = None,
         errors: Optional[list] = None,
+        roadmap_content: Optional[str] = None,
     ) -> None:
         """
         Создать / обновить структуру документации активного проекта.
@@ -80,7 +87,7 @@ class ProjectWriter:
             self._update_dashboard(project, root, repo_path, git_snapshot),
             self._ensure_architecture(project, root, repo_path),
             self._ensure_decisions(root),
-            self._ensure_roadmap(project, root),
+            self._ensure_roadmap(project, root, roadmap_content),
             self._append_dev_log(project, root, git_snapshot, errors),
         )
         logger.info("ProjectWriter: структура '%s' готова (%s)", project, root)
@@ -200,35 +207,44 @@ class ProjectWriter:
         await asyncio.to_thread(_write)
         logger.debug("ProjectWriter: Decisions/README.md создан")
 
-    async def _ensure_roadmap(self, project: str, root: Path) -> None:
-        """Создать Roadmap.md с шаблоном если его нет. Никогда не перезаписывать."""
+    async def _ensure_roadmap(
+        self,
+        project: str,
+        root: Path,
+        llm_content: Optional[str] = None,
+    ) -> None:
+        """
+        Создать Roadmap.md если его нет. Никогда не перезаписывать.
+        llm_content — сгенерированный LLM текст; если None — пустой шаблон.
+        """
         path = root / "Roadmap.md"
         if path.exists():
             return
 
         today = _today_str()
-        content = (
+        header = (
             f"---\nproject: {project}\ntype: roadmap\ncreated: {today}\n---\n\n"
             f"# 🗺 Roadmap — {project}\n\n"
-            f"> Долгосрочные задачи и направления развития. Заполняй вручную.\n\n"
-            f"## 🔥 В работе\n\n"
-            f"<!-- Задачи которые уже начаты или запланированы на ближайшие недели -->\n\n"
-            f"## 📅 Планируется\n\n"
-            f"<!-- Конкретные фичи которые хочешь сделать -->\n\n"
-            f"- [ ] \n\n"
-            f"## 💡 Идеи\n\n"
-            f"<!-- Идеи без конкретных сроков — можно обсудить с ассистентом -->\n\n"
-            f"- [ ] \n\n"
-            f"## ✅ Сделано\n\n"
-            f"<!-- Переноси сюда когда готово -->\n\n"
+            f"> Составлено ассистентом. Редактируй под свои нужды.\n\n"
         )
+
+        if llm_content:
+            content = header + llm_content
+        else:
+            content = (
+                header
+                + "## 🔥 В работе\n\n\n"
+                + "## 📅 Планируется\n\n- [ ] \n\n"
+                + "## 💡 Идеи\n\n- [ ] \n\n"
+                + "## ✅ Сделано\n\n"
+            )
 
         def _write():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
 
         await asyncio.to_thread(_write)
-        logger.debug("ProjectWriter: Roadmap.md создан → %s", path)
+        logger.info("ProjectWriter: Roadmap.md создан → %s", path)
 
     async def _append_dev_log(
         self,

@@ -323,15 +323,24 @@ class TriggerEngine:
 
             # 14. Документация активного проекта — обновляем структуру в Obsidian
             if current_focus and self._project_writer.enabled:
-                git_snap = await self.context_builder.get_project_snapshot(current_focus)
+                git_snap  = await self.context_builder.get_project_snapshot(current_focus)
                 repo_path = await self.context_builder.get_project_git_path(current_focus)
-                errors = context.get("errors")
+                errors    = context.get("errors")
+
+                # Генерируем Roadmap только если файл ещё не существует
+                roadmap_content: str | None = None
+                if not self._project_writer.roadmap_exists(current_focus):
+                    roadmap_content = await self._generate_roadmap(
+                        current_focus, repo_path
+                    )
+
                 asyncio.create_task(
                     self._project_writer.write_project_structure(
                         project=current_focus,
                         repo_path=repo_path,
                         git_snapshot=git_snap,
                         errors=errors,
+                        roadmap_content=roadmap_content,
                     ),
                     name="project_structure_update",
                 )
@@ -416,17 +425,23 @@ class TriggerEngine:
 
             logger.info("TriggerEngine[bg]: '%s' — %d задач записано", project, len(tasks))
 
-            # Создаём структуру документации для фонового проекта (Dashboard, Architecture, Dev Log, Decisions)
+            # Создаём структуру документации для фонового проекта
             if self._project_writer.enabled:
-                git_snap = await self.context_builder.get_project_snapshot(project)
+                git_snap  = await self.context_builder.get_project_snapshot(project)
                 repo_path = await self.context_builder.get_project_git_path(project)
-                errors = context.get("errors")
+                errors    = context.get("errors")
+
+                roadmap_content: str | None = None
+                if not self._project_writer.roadmap_exists(project):
+                    roadmap_content = await self._generate_roadmap(project, repo_path)
+
                 asyncio.create_task(
                     self._project_writer.write_project_structure(
                         project=project,
                         repo_path=repo_path,
                         git_snapshot=git_snap,
                         errors=errors,
+                        roadmap_content=roadmap_content,
                     ),
                     name=f"bg_structure_{project}",
                 )
@@ -546,6 +561,68 @@ class TriggerEngine:
             logger.info(
                 "TriggerEngine: задача '%s' авто-завершена ассистентом", task_title
             )
+
+    async def _generate_roadmap(
+        self,
+        project: str,
+        repo_path: str | None,
+    ) -> str | None:
+        """
+        Одиночный LLM-запрос для генерации стратегического Roadmap проекта.
+        Читает README/ТЗ из репозитория и просит LLM предложить долгосрочные задачи.
+        Возвращает markdown-текст или None при ошибке.
+        """
+        logger.info("TriggerEngine: генерирую Roadmap для '%s'...", project)
+
+        # Читаем исходники проекта
+        source_text = ""
+        if repo_path:
+            from pathlib import Path as _Path
+            repo = _Path(repo_path)
+            for fname in ("ТЗ.md", "TZ.md", "README.md", "readme.md"):
+                src = repo / fname
+                if src.exists():
+                    try:
+                        source_text = src.read_text(encoding="utf-8")[:6000]
+                        break
+                    except Exception:
+                        pass
+
+        if not source_text:
+            source_text = f"Проект: {project}. Описание недоступно."
+
+        system = (
+            "Ты стратегический ассистент разработчика. "
+            "Анализируй проект и предлагай конкретные долгосрочные улучшения. "
+            "Отвечай только на русском языке простыми словами без жаргона. "
+            "Формат ответа — строго markdown."
+        )
+        user = (
+            f"Проект: {project}\n\n"
+            f"Описание:\n{source_text}\n\n"
+            "Составь Roadmap — список долгосрочных задач и улучшений для этого проекта.\n"
+            "Думай стратегически: платформы, масштабируемость, UX, интеграции, надёжность.\n\n"
+            "Структура ответа (строго):\n"
+            "## 📅 Планируется\n"
+            "<!-- 3-5 конкретных задач которые реально нужны -->\n"
+            "- [ ] Задача\n\n"
+            "## 💡 Идеи\n"
+            "<!-- 3-5 идей для развития без конкретных сроков -->\n"
+            "- [ ] Идея\n\n"
+            "## ✅ Сделано\n"
+            "<!-- оставь пустым -->\n\n"
+            "Не добавляй ничего кроме этих трёх секций."
+        )
+
+        try:
+            raw, _ = await self.ollama.complete(system, user)
+            # Берём только начиная с первого ##
+            lines = raw.splitlines()
+            start = next((i for i, l in enumerate(lines) if l.startswith("##")), 0)
+            return "\n".join(lines[start:]).strip() + "\n"
+        except Exception as e:
+            logger.debug("TriggerEngine: не удалось сгенерировать Roadmap — %s", e)
+            return None
 
     # ─── Публичные методы ────────────────────────────────────────────────────
 
