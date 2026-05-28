@@ -13,6 +13,8 @@ Obsidian → SQLite:
 import asyncio
 import logging
 import re
+import uuid
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
@@ -75,6 +77,7 @@ class TaskSyncer:
         self.bus.on("llm.completed",            self._on_llm_completed)
         self.bus.on("llm.background_completed", self._on_background_completed)
         self.bus.on("obsidian.daily_changed",   self._on_daily_changed)
+        self.bus.on("trigger.rollover",         self._on_rollover)
 
     # ─── LLM → Obsidian ─────────────────────────────────────────────────────
 
@@ -307,6 +310,94 @@ class TaskSyncer:
             })
             logger.info("TaskSyncer: 🎉 все %d задач выполнены (%s)!",
                         total_count, project or "общие")
+
+    # ─── Перенос задач на новый день (rollover) ─────────────────────────────
+
+    async def _on_rollover(self, data: dict) -> None:
+        """Обработчик события trigger.rollover — переносит задачи активного проекта."""
+        project = (data or {}).get("project")
+        if not project or not self.client.shared_root:
+            return
+        count = await self.rollover_to_today(project)
+        if count:
+            logger.info("TaskSyncer: rollover %d задач → сегодня (%s)", count, project)
+
+    async def rollover_to_today(self, project: str) -> int:
+        """
+        Перенести незакрытые задачи из последнего дейли файла в сегодняшний.
+        Запускается при смене даты (старт сервиса, утренний брифинг).
+        Не трогает файл если сегодняшний уже существует.
+        Возвращает число перенесённых задач.
+        """
+        if not self.client.shared_root or not project:
+            return 0
+
+        today_path = self.client.daily_path_fs(project)
+        if today_path.exists():
+            return 0  # сегодняшний файл уже есть — LLM сделает своё дело
+
+        daily_dir = self.client.shared_root / project / self.client.daily_folder
+        if not daily_dir.exists():
+            return 0
+
+        # Находим самый свежий daily файл (кроме сегодняшнего)
+        today_str = date.today().strftime("%d.%m.%Y")
+        md_files = sorted(
+            [f for f in daily_dir.glob("*.md") if f.stem != today_str],
+            reverse=True,
+        )
+        if not md_files:
+            return 0
+
+        prev_path = md_files[0]
+        try:
+            content = await asyncio.to_thread(prev_path.read_text, "utf-8")
+        except Exception as e:
+            logger.debug("TaskSyncer[rollover]: не удалось прочитать %s: %s", prev_path, e)
+            return 0
+
+        # Парсим незакрытые задачи с сохранением приоритета из секций
+        tasks: list[dict] = []
+        current_priority = "MED"
+        _PRIORITY_MAP = {"🔴": "HIGH", "🟡": "MED", "🟢": "LOW"}
+
+        for line in content.splitlines():
+            # Обновляем приоритет из заголовка секции
+            for emoji, prio in _PRIORITY_MAP.items():
+                if emoji in line and line.startswith("##"):
+                    current_priority = prio
+                    break
+
+            # Незакрытые задачи с id
+            m = re.match(
+                r'\s*-\s+\[ \]\s+(.+?)(?:\s+<!--\s+id:([^>]+?)\s+-->)?\s*$',
+                line,
+            )
+            if m:
+                title   = m.group(1).strip()
+                task_id = (m.group(2) or str(uuid.uuid4())).strip()
+                tasks.append({
+                    "id":       task_id,
+                    "title":    title,
+                    "priority": current_priority,
+                    "done":     False,
+                    "project":  project,
+                })
+
+        if not tasks:
+            logger.debug("TaskSyncer[rollover]: '%s' — нет незакрытых задач в %s",
+                         project, prev_path.name)
+            return 0
+
+        prev_date = prev_path.stem  # "27.05.2026"
+        prologue = f"Перенесено с {prev_date} · жди обновления от ассистента"
+
+        await self._smart_write_daily_fs(tasks, prologue, project, open_after=False)
+        logger.info(
+            "TaskSyncer[rollover]: %d задач %s → %s",
+            len(tasks), prev_path.name, today_path.name,
+        )
+        return len(tasks)
 
     # ─── Утилиты ────────────────────────────────────────────────────────────
 

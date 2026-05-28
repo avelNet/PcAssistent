@@ -150,6 +150,11 @@ class TriggerEngine:
                 and not self._is_locked):
             self._morning_done_date = today
             logger.info("TriggerEngine: утренний брифинг (%d:xx)", morning_hour)
+            # Перенос незакрытых задач активного проекта на новый день (до LLM)
+            from storage.focus_store import get_focus
+            focus = get_focus()
+            if focus:
+                await self.bus.emit("trigger.rollover", {"project": focus})
             await self._try_run("morning_briefing", voice=True)
 
         # Вечерний итог — один раз в день в evening_hour

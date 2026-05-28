@@ -189,6 +189,13 @@ class Orchestrator:
             if synced:
                 logger.info("Orchestrator: синхронизировано %d задач из Obsidian", synced)
 
+            # 7g. Rollover — перенести незакрытые задачи активного проекта
+            # если сегодняшний файл ещё не создан (смена даты)
+            from storage.focus_store import get_focus
+            focus = get_focus()
+            if focus:
+                await self.bus.emit("trigger.rollover", {"project": focus})
+
         # 8. Подписка на результат LLM (для логирования в Day 1)
         self.bus.on("llm.completed", self._on_llm_completed)
 
