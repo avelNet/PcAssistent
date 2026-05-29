@@ -6,25 +6,20 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# Пути подставляются install.sh автоматически.
+# %h — домашняя директория пользователя (systemd specifier)
 ExecStart=%h/Development/PcAssistent/.venv/bin/python3 %h/Development/PcAssistent/main.py
 WorkingDirectory=%h/Development/PcAssistent
 Restart=on-failure
 RestartSec=30
-
-# Логи через journald (доступны через: journalctl --user -u pc-assistant -f)
 StandardOutput=journal
 StandardError=journal
-
-# Переменные окружения для X11/GUI уведомлений
 Environment=DISPLAY=:0
-Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
-
-# PipeWire/PulseAudio — без этого aplay не находит звуковую карту
-Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
-Environment=PIPEWIRE_RUNTIME_DIR=/run/user/1000
-
-# Дать системе время до запуска (X11 должен быть готов)
+# %U — UID текущего пользователя (systemd specifier, заменяет хардкод 1000)
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+Environment=PULSE_SERVER=unix:/run/user/%U/pulse/native
+Environment=PIPEWIRE_RUNTIME_DIR=/run/user/%U
 ExecStartPre=/bin/sleep 5
 
 [Install]
