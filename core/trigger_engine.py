@@ -153,6 +153,10 @@ class TriggerEngine:
         await self._try_run("after_work_session", voice=False,
                             extra={"session": data, **extra} if extra else {"session": data})
 
+        # Авто-коммит: если есть незакоммиченные файлы — предлагаем закоммитить
+        if self.config.get("auto_commit", {}).get("enabled", False):
+            asyncio.create_task(self._suggest_commit(), name="auto_commit")
+
     async def _on_user_returned(self, data: dict) -> None:
         """Пользователь вернулся после долгого перерыва."""
         idle_min = data.get("idle_was_min", 0) if data else 0
@@ -204,6 +208,57 @@ class TriggerEngine:
 
         # LLM-анализ — генерирует свежие задачи, озвучивает и пишет в Obsidian
         await self._try_run("focus_switch", voice=True, force=True)
+
+    async def _suggest_commit(self) -> None:
+        """
+        После рабочей сессии: если есть незакоммиченные файлы в активном проекте —
+        генерируем сообщение коммита через LLM и спрашиваем через уведомление.
+        """
+        from storage.focus_store import get_focus
+        focus = get_focus()
+        if not focus:
+            return
+
+        snap = await self.context_builder.get_project_snapshot(focus)
+        if not snap:
+            return
+
+        uncommitted = snap.get("uncommitted_files", [])
+        if not uncommitted:
+            return
+
+        count = len(uncommitted)
+        logger.info("auto_commit: %d незакоммиченных файлов в '%s'", count, focus)
+
+        # Генерируем сообщение коммита через LLM
+        try:
+            context = await self.context_builder.build("auto_commit")
+            files_str = "\n".join(
+                (f.get("path", str(f)) if isinstance(f, dict) else str(f))
+                for f in uncommitted[:15]
+            )
+            system = (
+                "Ты ассистент разработчика. Сгенерируй краткое сообщение git-коммита "
+                "на русском языке (до 72 символов) по изменённым файлам. "
+                "Формат: <тип>: <что сделано>. Только одна строка, без кавычек."
+            )
+            user = f"Изменённые файлы в проекте {focus}:\n{files_str}"
+            commit_msg, _ = await self.llm.complete(system, user)
+            commit_msg = commit_msg.strip().splitlines()[0][:100]
+        except Exception as e:
+            logger.debug("auto_commit: LLM ошибка — %s", e)
+            commit_msg = f"chore: сохранение {count} изменений"
+
+        # Уведомление с кнопкой
+        from core.notifier import notify
+        await notify(
+            f"📦 Незакоммиченные изменения ({count} файлов)",
+            f"Предлагаю: {commit_msg}",
+            urgency="normal",
+            timeout_ms=30000,
+            icon="vcs-commit",
+        )
+        logger.info("auto_commit: уведомление отправлено — «%s»", commit_msg)
 
     def _on_process_snapshot(self, data: dict) -> None:
         """Обновить состояние процессов (синхронный обработчик)."""
@@ -260,6 +315,11 @@ class TriggerEngine:
             self._evening_done_date = today
             logger.info("TriggerEngine: вечерний итог (%d:xx)", evening_hour)
             await self._try_run("evening_summary", voice=True)
+
+            # Недельный отчёт — каждое воскресенье вечером
+            if now.weekday() == 6 and not self._is_locked:
+                logger.info("TriggerEngine: недельный отчёт (воскресенье)")
+                await self._try_run("weekly_report", voice=True, force=True)
 
     # ─── Основная логика ────────────────────────────────────────────────────
 
@@ -425,7 +485,14 @@ class TriggerEngine:
                     name=f"auto_complete_{pd_task.get('id', '')[:8]}",
                 )
 
-            # 14. Логируем результат
+            # 14. Telegram — HIGH-задачи при голосовом брифинге
+            if voice and tasks:
+                from core.telegram_notifier import send_telegram
+                asyncio.create_task(
+                    send_telegram(tasks, prologue, trigger, self._full_config),
+                    name="telegram_notify",
+                )
+
             logger.info("TriggerEngine: LLM завершён за %.1fс, задач=%d", duration, len(tasks))
             logger.info("\n%s", task_parser.format_tasks_for_display(tasks))
             logger.info("═" * 50)

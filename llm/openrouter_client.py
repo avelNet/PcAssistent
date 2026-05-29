@@ -153,7 +153,7 @@ class OpenRouterClient:
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             timeout = aiohttp.ClientTimeout(total=self.timeout_s)
-            self._session = aiohttp.ClientSession(timeout=timeout)
+            self._session = aiohttp.ClientSession(timeout=timeout, trust_env=True)
         return self._session
 
     def _headers(self) -> dict:

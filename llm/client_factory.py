@@ -108,23 +108,25 @@ def create_llm_client(config: dict):
         return client
 
     if provider == "auto":
-        # Лёгкий chain: OpenRouter первый (много лимитов), Groq — запасной
+        # Лёгкий chain: OpenRouter → Groq → Ollama (офлайн fallback)
         from llm.groq_client import GroqClient
         from llm.openrouter_client import OpenRouterClient
-        clients = [OpenRouterClient(config), GroqClient(config)]
-        names = ["openrouter", "groq"]
+        from llm.ollama_client import OllamaClient
+        clients = [OpenRouterClient(config), GroqClient(config), OllamaClient(config)]
+        names   = ["openrouter", "groq", "ollama"]
         chain = ChainLLMClient(clients, names)
-        logger.info("LLM: используем chain [openrouter → groq]")
+        logger.info("LLM: используем chain [openrouter → groq → ollama]")
         return chain
 
     if provider == "heavy":
-        # Тяжёлый chain: Groq первый (быстро, качественно), OpenRouter — запасной
+        # Тяжёлый chain: Groq → OpenRouter → Ollama (офлайн fallback)
         from llm.groq_client import GroqClient
         from llm.openrouter_client import OpenRouterClient
-        clients = [GroqClient(config), OpenRouterClient(config)]
-        names = ["groq", "openrouter"]
+        from llm.ollama_client import OllamaClient
+        clients = [GroqClient(config), OpenRouterClient(config), OllamaClient(config)]
+        names   = ["groq", "openrouter", "ollama"]
         chain = ChainLLMClient(clients, names)
-        logger.info("LLM heavy: используем chain [groq → openrouter]")
+        logger.info("LLM heavy: используем chain [groq → openrouter → ollama]")
         return chain
 
     if provider == "ollama":

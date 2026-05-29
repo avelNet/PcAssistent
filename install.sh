@@ -126,6 +126,27 @@ else
     echo "TTS — голосовые уведомления (опционально)."
     echo "SaluteSpeech: зарегистрируйся на developers.sber.ru → создай проект → скопируй credentials."
     read -rp "SaluteSpeech credentials (base64, или Enter чтобы пропустить): " SALUTE_KEY
+    echo
+
+    # Ollama — офлайн fallback
+    OLLAMA_MODEL=""
+    if command -v ollama &>/dev/null; then
+        echo "Ollama найден — выбери модель для офлайн-режима:"
+        echo "  1) qwen2.5:3b    (~2 GB RAM) — быстрая, базовое качество"
+        echo "  2) qwen2.5:7b    (~5 GB RAM) — хороший баланс (рекомендуется)"
+        echo "  3) qwen2.5:14b   (~10 GB RAM) — лучшее качество"
+        echo "  4) Пропустить"
+        read -rp "Выбор [2]: " OLLAMA_CHOICE
+        case "${OLLAMA_CHOICE:-2}" in
+            1) OLLAMA_MODEL="qwen2.5:3b" ;;
+            2) OLLAMA_MODEL="qwen2.5:7b" ;;
+            3) OLLAMA_MODEL="qwen2.5:14b" ;;
+        esac
+        if [[ -n "$OLLAMA_MODEL" ]]; then
+            info "Загружаю модель $OLLAMA_MODEL (может занять несколько минут)..."
+            ollama pull "$OLLAMA_MODEL" || warn "Не удалось загрузить — загрузи вручную: ollama pull $OLLAMA_MODEL"
+        fi
+    fi
 
     {
         echo "# Локальные секреты — не коммитить в git"
@@ -140,6 +161,11 @@ else
         if [[ -n "$GROQ_KEY" ]]; then
             echo "groq:"
             echo "  api_key: \"$GROQ_KEY\""
+            echo ""
+        fi
+        if [[ -n "$OLLAMA_MODEL" ]]; then
+            echo "ollama:"
+            echo "  model: \"$OLLAMA_MODEL\""
             echo ""
         fi
         if [[ -n "$SALUTE_KEY" ]]; then

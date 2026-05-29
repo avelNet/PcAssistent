@@ -149,46 +149,36 @@ async def notify_with_obsidian_action(
     if not clicked:
         return
 
-    # Открываем файл внутри Obsidian через URI
+    # Передаём activation token в окружение xdg-open.
+    # xdg-open → gio open → Obsidian получает токен через XDG activation protocol
+    # и сам поднимает своё окно (Electron 20+ поддерживает xdg-activation).
+    env = dict(os.environ)
+    if activation_token:
+        env["XDG_ACTIVATION_TOKEN"] = activation_token
+        env["DESKTOP_STARTUP_ID"]   = activation_token
+        logger.info("notifier: activation token есть — Obsidian должен получить фокус")
+    else:
+        logger.debug("notifier: activation token отсутствует — фокус на Wayland недоступен")
+
     if path_str:
         encoded = urllib.parse.quote(path_str, safe="")
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "xdg-open", f"obsidian://open?path={encoded}",
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await asyncio.wait_for(proc.wait(), timeout=5)
-            await asyncio.sleep(0.5)
-        except Exception:
-            pass
+        uri = f"obsidian://open?path={encoded}"
+    else:
+        uri = "obsidian://"
 
-    # Фокусируем Obsidian через activation token (Wayland XDG activation)
-    focus_env = dict(os.environ)
-    if activation_token:
-        focus_env["DESKTOP_STARTUP_ID"] = activation_token
-        focus_env["XDG_ACTIVATION_TOKEN"] = activation_token
-        logger.info("notifier: activation token получен — запрашиваем фокус Obsidian")
-
-    for cmd in (
-        ["snap", "run", "obsidian"],
-        ["gtk-launch", "obsidian_obsidian"],
-        ["obsidian"],
-    ):
-        try:
-            await asyncio.create_subprocess_exec(
-                *cmd,
-                env=focus_env,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            logger.info("notifier: Obsidian запущен через %s (token=%s)",
-                        cmd[0], "да" if activation_token else "нет")
-            break
-        except FileNotFoundError:
-            continue
-        except Exception as e:
-            logger.debug("notifier: %s ошибка — %s", cmd[0], e)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "xdg-open", uri,
+            env=env,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=5)
+        logger.info("notifier: Obsidian URI отправлен → %s", uri[:80])
+    except FileNotFoundError:
+        logger.debug("notifier: xdg-open не найден")
+    except Exception as e:
+        logger.debug("notifier: xdg-open ошибка — %s", e)
 
 
 async def notify_tasks(
@@ -313,15 +303,10 @@ async def open_obsidian_note(fs_path: str | Path) -> None:
         logger.debug("notifier: xdg-open ошибка — %s", e)
         return
 
-    # 2. Пауза — Obsidian обрабатывает URI асинхронно
-    await asyncio.sleep(1.5)
-
-    # 3. Поднимаем окно на передний план
-    is_wayland = bool(os.environ.get("WAYLAND_DISPLAY"))
-
-    if is_wayland:
-        await _focus_obsidian_wayland()
-    else:
+    # На X11 — пробуем поднять окно через wmctrl
+    # На Wayland — фокус без токена невозможен; файл открыт, этого достаточно
+    if not os.environ.get("WAYLAND_DISPLAY"):
+        await asyncio.sleep(1.5)
         await _focus_obsidian_x11()
 
 

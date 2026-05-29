@@ -140,3 +140,31 @@ logging:
 # накопленные фоновые задачи. Поставь false если хочешь управлять фокусом
 # только через --focus вручную.
 auto_focus_from_ide: true
+
+# ─── Прокси ────────────────────────────────────────────────────────────────────
+# Для регионов с ограничениями (HTTP или SOCKS5).
+# Раскомментируй и укажи свой прокси в config.local.yaml:
+#
+#   proxy:
+#     url: "http://user:pass@host:8080"      # HTTP прокси
+#     url: "socks5://user:pass@host:1080"    # SOCKS5 (нужен: pip install aiohttp-socks)
+#
+# Переменные окружения HTTP_PROXY/HTTPS_PROXY/ALL_PROXY тоже работают.
+proxy:
+  url: ""   # пусто = без прокси
+
+# ─── Telegram ──────────────────────────────────────────────────────────────────
+# Дублирует HIGH-задачи в Telegram когда ты отошёл от компа.
+# Настрой в config.local.yaml:
+#   telegram:
+#     enabled: true
+#     bot_token: "123456:ABC..."   # от @BotFather
+#     chat_id: "123456789"         # написать боту /start → api.telegram.org/bot{TOKEN}/getUpdates
+telegram:
+  enabled: false
+
+# ─── Авто-коммит ───────────────────────────────────────────────────────────────
+# После рабочей сессии предлагает закоммитить незакоммиченные файлы.
+# LLM генерирует сообщение коммита автоматически.
+auto_commit:
+  enabled: false   # включи в config.local.yaml: auto_commit:\n  enabled: true

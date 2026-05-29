@@ -97,6 +97,7 @@ class Orchestrator:
     async def start(self) -> None:
         """Инициализировать и запустить все модули."""
         logger.info("Orchestrator: старт...")
+        self._apply_proxy()
 
         # 1. БД
         db_path = self.config.get("storage", {}).get("db_path", "~/.local/share/pc-assistant/db.sqlite")
@@ -216,6 +217,16 @@ class Orchestrator:
         )
 
         logger.info("Orchestrator: все модули запущены ✓")
+
+    def _apply_proxy(self) -> None:
+        """Применить прокси из config к переменным окружения процесса."""
+        import os
+        url = self.config.get("proxy", {}).get("url", "").strip()
+        if not url:
+            return
+        for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+            os.environ[var] = url
+        logger.info("Orchestrator: прокси установлен → %s", url.split("@")[-1])
 
     async def stop(self) -> None:
         """Graceful shutdown."""

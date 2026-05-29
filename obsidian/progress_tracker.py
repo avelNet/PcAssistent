@@ -69,11 +69,14 @@ class ProgressTracker:
         # Самый продуктивный день
         best_day = max(completion_by_day, key=completion_by_day.get) if completion_by_day else ""
 
+        chronic_errors = await self._find_chronic_errors()
+
         result = {
             "avg_completion_pct":  avg_completion,
             "completion_by_day":   completion_by_day,
             "stuck_tasks":         stuck_tasks[:5],
             "abandoned_projects":  abandoned_projects[:3],
+            "chronic_errors":      chronic_errors[:3],
             "best_day":            best_day,
             "best_day_pct":        completion_by_day.get(best_day, 0),
             "days_analyzed":       len(by_date),
@@ -115,6 +118,41 @@ class ProgressTracker:
                 })
 
         return sorted(stuck, key=lambda x: x["days_count"], reverse=True)
+
+    async def _find_chronic_errors(self) -> list[dict]:
+        """
+        Ошибки повторяющиеся 3+ дня подряд → хроническая проблема.
+        Возвращает: [{ error_type, file, days_count }]
+        """
+        errors = await context_store.get_errors(hours=24 * self._days)
+        if not errors:
+            return []
+
+        from datetime import datetime, timezone
+        from collections import defaultdict
+
+        # Группируем по (error_type, file) и дате
+        by_key: dict[tuple, set] = defaultdict(set)
+        for e in errors:
+            key = (e.get("error_type", ""), e.get("file", ""))
+            ts = e.get("timestamp") or e.get("created_at") or ""
+            try:
+                day = str(ts)[:10]  # YYYY-MM-DD
+                if day:
+                    by_key[key].add(day)
+            except Exception:
+                pass
+
+        chronic = []
+        for (etype, fpath), days in by_key.items():
+            if len(days) >= 3:
+                chronic.append({
+                    "error_type": etype,
+                    "file":       fpath,
+                    "days_count": len(days),
+                })
+
+        return sorted(chronic, key=lambda x: x["days_count"], reverse=True)
 
     def _find_abandoned_projects(self, by_date: dict) -> list[str]:
         """

@@ -27,8 +27,9 @@ _TRIGGER_GREETING = {
     "evening_summary":     "Итог дня.",
     "manual":              "Готово.",
     "focus_switch":        "",
-    "branch_switch":       "",  # анонс ветки уже сказан голосом до LLM
+    "branch_switch":       "",
     "git_activity":        "",
+    "weekly_report":       "Итог недели.",
 }
 
 

@@ -5,6 +5,7 @@ context_builder.py — собирает контекст для LLM из все�
 import asyncio
 import logging
 from datetime import date
+from pathlib import Path
 
 from storage import context_store
 from storage.focus_store import get_focus
@@ -78,6 +79,7 @@ class ContextBuilder:
             "ide":          self._get_jetbrains_context(),
             "productivity": self._get_productivity_context(),
             "progress":     self._get_progress_context(),
+            "terminal":     self._get_terminal_history(),
         }
 
         results = await asyncio.gather(*source_tasks.values(), return_exceptions=True)
@@ -226,6 +228,40 @@ class ContextBuilder:
         except Exception as e:
             logger.debug("ContextBuilder: progress_tracker ошибка — %s", e)
             return {}
+
+    async def _get_terminal_history(self) -> list[str]:
+        """
+        Последние команды из ~/.bash_history и ~/.zsh_history.
+        Фильтруем мусор (cd, ls, clear) — оставляем только содержательные.
+        """
+        _SKIP = frozenset({
+            "ls", "ll", "la", "cd", "pwd", "clear", "exit", "history",
+            "cat", "man", "echo", "which", "whoami", "date", "top", "htop",
+        })
+        cmds: list[str] = []
+        for hist_file in ("~/.bash_history", "~/.zsh_history"):
+            path = Path(hist_file).expanduser()
+            if not path.exists():
+                continue
+            try:
+                lines = path.read_text(errors="ignore").splitlines()
+                for line in reversed(lines[-500:]):  # последние 500 строк
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    # zsh history format: ": timestamp:elapsed;command"
+                    if line.startswith(":") and ";" in line:
+                        line = line.split(";", 1)[1]
+                    first = line.split()[0] if line.split() else ""
+                    if first in _SKIP:
+                        continue
+                    if line not in cmds:
+                        cmds.append(line)
+                    if len(cmds) >= 30:
+                        break
+            except Exception as e:
+                logger.debug("ContextBuilder: bash_history ошибка — %s", e)
+        return cmds[:30]
 
     async def _get_vault_context(self, focus: str | None = None) -> dict:
         """
