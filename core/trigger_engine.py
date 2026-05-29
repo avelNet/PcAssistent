@@ -193,9 +193,9 @@ class TriggerEngine:
         morning_hour = self.config.get("morning_hour", 9)
         evening_hour = self.config.get("evening_hour", 19)
 
-        # Утренний брифинг — один раз в день начиная с morning_hour
-        # >= чтобы не пропускать если комп включили позже 9 утра
-        if (hour >= morning_hour
+        # Утренний брифинг — один раз в день, только до вечернего часа
+        # (если сервис стартовал вечером — morning уже прошло, не показываем)
+        if (morning_hour <= hour < evening_hour
                 and self._morning_done_date != today
                 and not self._is_locked):
             self._morning_done_date = today

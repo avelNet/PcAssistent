@@ -94,7 +94,9 @@ class SpeechOutput:
         if not self.tts.enabled or not tasks:
             return
 
-        speak = self.tts.speak  # shortcut
+        # Все фразы проходят через препроцессор: числа → слова, англ → фонетика
+        async def speak(text: str) -> None:
+            await self.tts.speak(preprocess_for_tts(text))
 
         # 1. Приветствие
         greeting = _TRIGGER_GREETING.get(trigger, "")
