@@ -82,6 +82,82 @@ def _norm_title(title: str) -> str:
     """Нормализованный заголовок для fuzzy-сравнения (lowercase + trim)."""
     return re.sub(r'\s+', ' ', title.lower().strip())
 
+
+# Стоп-слова которые не помогают различать задачи — игнорируем при сравнении
+_TASK_STOPWORDS = frozenset({
+    # русские
+    "в", "на", "из", "по", "для", "и", "к", "с", "о", "от", "до",
+    "то", "же", "это", "что", "как", "при", "или", "если", "все", "уже",
+    "переменную", "переменные", "переменная", "переменных",
+    "понятное", "понятные", "понятной",
+    "файл", "файлы", "файлах", "файла",
+    "код", "коде", "кода", "коду",
+    "проект", "проекта", "проекту",
+    "git", "github",
+    # английские
+    "the", "and", "for", "with", "from", "that", "this", "are", "was",
+})
+
+
+def _task_key(title: str) -> frozenset[str]:
+    """Набор значимых слов из заголовка для fuzzy-сравнения задач."""
+    tokens = re.findall(r'[a-zа-яё]{3,}', title.lower())
+    return frozenset(t for t in tokens if t not in _TASK_STOPWORDS)
+
+
+def _dedupe_tasks(tasks: list[dict]) -> list[dict]:
+    """
+    Убрать смысловые дубли задач по fuzzy-сравнению заголовков.
+    Сравниваем по набору значимых слов: если overlap >= 60% → дубль.
+    Приоритет более поздних в списке (новые от LLM > carry-over).
+    Сохраняет [x] done если хоть одна из дублей помечена выполненной.
+    """
+    indexed = list(enumerate(tasks))
+    keys = [_task_key(t.get("title", "")) for _, t in indexed]
+
+    keep_indices: list[int] = []
+    dup_groups: dict[int, list[int]] = {}  # keep_idx → [duplicate_idx, ...]
+
+    # Идём с конца — новые задачи имеют приоритет
+    for idx in range(len(indexed) - 1, -1, -1):
+        key = keys[idx]
+        if not key:
+            keep_indices.append(idx)
+            continue
+
+        matched_keep = None
+        for keep_idx in keep_indices:
+            keep_key = keys[keep_idx]
+            if not keep_key:
+                continue
+            overlap = len(key & keep_key)
+            if overlap >= 2 and overlap / max(len(key), len(keep_key)) >= 0.5:
+                matched_keep = keep_idx
+                break
+
+        if matched_keep is None:
+            keep_indices.append(idx)
+        else:
+            dup_groups.setdefault(matched_keep, []).append(idx)
+
+    # Восстановим оригинальный порядок задач
+    keep_indices.sort()
+
+    # Сохраняем done-статус если хоть один из дублей выполнен
+    result = []
+    for keep_idx in keep_indices:
+        task = dict(tasks[keep_idx])
+        for dup_idx in dup_groups.get(keep_idx, []):
+            if tasks[dup_idx].get("done"):
+                task["done"] = True
+                task["done_by"] = tasks[dup_idx].get("done_by", "")
+        result.append(task)
+
+    removed = len(tasks) - len(result)
+    if removed > 0:
+        logger.info("TaskSyncer: дедупликация — убрано %d дублей по смыслу", removed)
+    return result
+
 # Триггеры где создаём новую дейли (а не дозаписываем)
 _MORNING_TRIGGERS = {
     "morning_briefing",
@@ -233,6 +309,10 @@ class TaskSyncer:
                     "TaskSyncer: перенесено %d незакрытых задач с предыдущего дня",
                     len(carried),
                 )
+
+        # Дедупликация по смыслу — убираем задачи которые описывают одно и то же
+        # разными словами (LLM каждый раз генерирует новые UUID и формулировки)
+        tasks = _dedupe_tasks(tasks)
 
         content = self.client._build_task_list(tasks, prologue, project)
 
