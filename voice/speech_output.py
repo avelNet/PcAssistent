@@ -8,10 +8,11 @@ voice/speech_output.py — высокоуровневый интерфейс о�
 import logging
 
 from voice.tts_engine import TTSEngine
+from voice.tts_preprocessor import preprocess_for_tts
 
 logger = logging.getLogger(__name__)
 
-_MAX_TASKS   = 5
+_MAX_TASKS    = 3   # больше 3 задач слушать бессмысленно — не запомнить
 _MAX_PROLOGUE = 300
 
 _PRIORITY_WORD = {"HIGH": "срочно", "MED": "важно", "LOW": ""}
@@ -21,7 +22,7 @@ _TRIGGER_GREETING = {
     "after_work_session":  "Сессия завершена. Вот что дальше.",
     "user_returned":       "С возвращением! Напоминаю контекст.",
     "evening_summary":     "Итог дня.",
-    "manual":              "Анализ завершён.",
+    "manual":              "Готово.",
 }
 
 
@@ -49,38 +50,41 @@ class SpeechOutput:
         if greeting:
             parts.append(greeting)
 
-        # Пролог — максимум 300 символов
+        # Пролог — максимум 300 символов, конвертируем английские слова
         if prologue:
             short = prologue.strip()[:_MAX_PROLOGUE]
             if len(prologue.strip()) > _MAX_PROLOGUE:
                 short += "..."
-            parts.append(short)
+            parts.append(preprocess_for_tts(short))
 
-        # Задачи — сортируем HIGH→MED→LOW, берём первые 5
+        # Задачи — сортируем HIGH→MED→LOW, озвучиваем топ-3 (больше не запомнить)
         sorted_tasks = sorted(
             tasks,
             key=lambda t: {"HIGH": 0, "MED": 1, "LOW": 2}.get(t.get("priority", "LOW"), 3),
         )[:_MAX_TASKS]
 
         total = len(tasks)
+        shown = len(sorted_tasks)
+
         if total == 1:
             parts.append("Одна задача.")
+        elif shown < total:
+            parts.append("Главные задачи:")
         else:
-            shown = min(total, _MAX_TASKS)
-            parts.append(f"{'Все' if total <= _MAX_TASKS else 'Топ'} {shown} задач{'и' if shown < 5 else ''}:")
+            parts.append("Задачи:")
 
-        for i, task in enumerate(sorted_tasks, 1):
+        for task in sorted_tasks:
             title    = task.get("title", "")
             priority = task.get("priority", "LOW")
             prefix   = _PRIORITY_WORD.get(priority, "")
-            line     = f"{i}. {prefix + ': ' if prefix else ''}{title}."
+            line     = f"{prefix + ' — ' if prefix else ''}{title}."
             parts.append(line)
 
         if total > _MAX_TASKS:
-            parts.append(f"И ещё {total - _MAX_TASKS} задач.")
+            parts.append("Остальное — в заметках.")
 
-        text = " ".join(parts)
-        logger.info("speech: озвучиваем брифинг (%d задач, trigger=%s)", len(sorted_tasks), trigger)
+        text = preprocess_for_tts(" ".join(parts))
+        logger.info("speech: озвучиваем брифинг (%d задач, trigger=%s)", shown, trigger)
         await self.tts.speak(text)
 
     async def speak_summary(self, stats: dict) -> None:
