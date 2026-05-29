@@ -113,8 +113,9 @@ def _notify_portal_blocking(
         "title":    GLib.Variant("s", title),
         "body":     GLib.Variant("s", body),
         "priority": GLib.Variant("s", "high"),
-        # Указываем .desktop файл явно — иначе портал создаёт призрак-приложение
-        # на панели задач и иконка мерцает
+        # icon обязателен — без него GNOME ищет приложение по D-Bus sender (:1.NNN),
+        # не находит .desktop и создаёт временную запись в доке (мерцание)
+        "icon":     GLib.Variant("(sv)", ("themed-icon", GLib.Variant("as", ["appointment-new"]))),
         "default-action-target": GLib.Variant("s", "pc-assistant"),
         "buttons":  GLib.Variant("aa{sv}", [
             {

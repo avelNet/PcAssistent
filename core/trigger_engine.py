@@ -22,11 +22,11 @@ logger = logging.getLogger(__name__)
 
 class TriggerEngine:
     def __init__(self, config: dict, bus: EventBus,
-                 ollama, context_builder: ContextBuilder):
+                 llm, context_builder: ContextBuilder):
         self.config = config.get("trigger", {})
         self._full_config = config  # нужен для SpeechOutput
         self.bus = bus
-        self.ollama = ollama
+        self.llm = llm
         self.context_builder = context_builder
 
         self._last_run_ts: float = 0
@@ -284,20 +284,19 @@ class TriggerEngine:
                 logger.info("TriggerEngine: контекст не изменился, пропускаем")
                 return
 
-            # 3. Проверяем доступность Ollama
-            if not await self.ollama.check_availability():
-                logger.error(
-                    "TriggerEngine: Ollama недоступна! "
-                    "Запусти: ollama serve && ollama pull %s",
-                    self.ollama.model
-                )
+            # 3. Проверяем доступность LLM
+            if not await self.llm.check_availability():
+                provider = self._full_config.get("llm", {}).get("provider", "ollama")
+                logger.error("TriggerEngine: LLM недоступна! провайдер=%s", provider)
+                from core.notifier import notify_error
+                await notify_error(f"LLM недоступна ({provider}). Проверь ключ или соединение.")
                 return
 
             # 4. Формируем промпт
             system_prompt, user_prompt = prompt_engine.build(trigger, context)
 
             # 5. Запрашиваем LLM
-            raw_text, meta = await self.ollama.complete(system_prompt, user_prompt)
+            raw_text, meta = await self.llm.complete(system_prompt, user_prompt)
 
             # 6. Парсим задачи
             result = task_parser.parse(raw_text)
@@ -319,7 +318,7 @@ class TriggerEngine:
             duration = time.monotonic() - start
             await context_store.save_llm_run(
                 trigger=trigger,
-                model=meta.get("model", self.ollama.model),
+                model=meta.get("model", self.llm.model),
                 duration_s=duration,
                 tokens=meta.get("tokens_total", 0),
                 task_count=len(tasks),
@@ -473,7 +472,7 @@ class TriggerEngine:
                 "manual", project_override=project
             )
             system_prompt, user_prompt = prompt_engine.build("manual", context)
-            raw_text, meta = await self.ollama.complete(system_prompt, user_prompt)
+            raw_text, meta = await self.llm.complete(system_prompt, user_prompt)
 
             result = task_parser.parse(raw_text)
             tasks  = result["tasks"]
@@ -683,7 +682,7 @@ class TriggerEngine:
         )
 
         try:
-            raw, _ = await self.ollama.complete(system, user)
+            raw, _ = await self.llm.complete(system, user)
             # Берём только начиная с первого ##
             lines = raw.splitlines()
             start = next((i for i, ln in enumerate(lines) if ln.startswith("##")), 0)
