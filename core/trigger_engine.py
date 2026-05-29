@@ -65,6 +65,7 @@ class TriggerEngine:
         """Подписаться на все события которые могут инициировать запуск LLM."""
         self.bus.on("trigger.llm", self._on_manual)
         self.bus.on("git.changed", self._on_git_changed)
+        self.bus.on("git.branch_changed", self._on_branch_changed)
         self.bus.on("errors.spike", self._on_errors_spike)
         self.bus.on("session.ended", self._on_session_ended)
         self.bus.on("user.returned", self._on_user_returned)
@@ -91,6 +92,46 @@ class TriggerEngine:
         logger.debug("TriggerEngine: git.changed — планирую отложенную проверку")
         await asyncio.sleep(120)  # 2 минуты
         await self._try_run("git_activity", voice=False)
+
+    async def _on_branch_changed(self, data: dict) -> None:
+        """Смена ветки в активном проекте — пересчитать контекст и объявить."""
+        if not data:
+            return
+        repo_name   = data.get("name", "")
+        new_branch  = data.get("branch", "")
+        prev_branch = data.get("prev_branch", "")
+
+        # Реагируем только на активный проект
+        from storage.focus_store import get_focus
+        focus = get_focus()
+        if focus and repo_name and focus.lower() != repo_name.lower():
+            logger.debug(
+                "TriggerEngine: branch_changed в фоновом проекте %s (%s→%s) — пропускаем",
+                repo_name, prev_branch, new_branch,
+            )
+            return
+
+        logger.info(
+            "TriggerEngine: ветка %s → %s в '%s'",
+            prev_branch, new_branch, repo_name,
+        )
+
+        # Голосовой анонс — коротко, без LLM
+        try:
+            from voice.speech_output import SpeechOutput
+            from voice.tts_preprocessor import preprocess_for_tts
+            sp = SpeechOutput(self._full_config)
+            cloud = sp.tts.engine == "salute"
+            phrase = f"Переключился на ветку {new_branch}."
+            await sp.tts.speak(preprocess_for_tts(phrase, cloud=cloud))
+        except Exception as e:
+            logger.debug("TriggerEngine: TTS branch announce ошибка — %s", e)
+
+        # LLM-анализ с новым контекстом ветки
+        await self._try_run(
+            "branch_switch", voice=False, force=True,
+            extra={"branch": new_branch, "prev_branch": prev_branch},
+        )
 
     async def _on_errors_spike(self, data: dict) -> None:
         """Спайк ошибок — запустить при ближайшей паузе в работе."""
@@ -161,8 +202,8 @@ class TriggerEngine:
             name="focus_switch_announce",
         )
 
-        # LLM-анализ — генерирует свежие задачи, пишет в Obsidian
-        await self._try_run("focus_switch", voice=False, force=True)
+        # LLM-анализ — генерирует свежие задачи, озвучивает и пишет в Obsidian
+        await self._try_run("focus_switch", voice=True, force=True)
 
     def _on_process_snapshot(self, data: dict) -> None:
         """Обновить состояние процессов (синхронный обработчик)."""
@@ -425,10 +466,16 @@ class TriggerEngine:
             await self.bus.emit("llm.all_done", {"trigger": trigger})
 
         except Exception as e:
-            # Ловим OllamaError, OpenRouterError и любые другие ошибки LLM
             logger.error("TriggerEngine: ошибка LLM — %s", e)
             if logger.isEnabledFor(logging.DEBUG):
                 logger.exception("TriggerEngine: детали ошибки")
+            # Уведомляем пользователя — иначе он не знает что анализ не прошёл
+            try:
+                from core.notifier import notify_error
+                short = str(e)[:120]
+                await notify_error(f"Ошибка анализа [{trigger}]: {short}")
+            except Exception:
+                pass
         finally:
             self._running = False
 

@@ -41,7 +41,9 @@ class VaultIndex:
 class VaultReader:
     def __init__(self, config: dict):
         obs_cfg = config.get("obsidian", {})
-        self.root = Path(obs_cfg.get("root", "~/Obsidian")).expanduser()
+        # shared_root — папка со всеми проектами (~Obsidian/ProjectA, ~/Obsidian/ProjectB)
+        # root — путь к активному vault для inotify watcher, не для сканирования
+        self.root = Path(obs_cfg.get("shared_root", obs_cfg.get("root", "~/Obsidian"))).expanduser()
         self.skip_folders = set(obs_cfg.get("skip_folders", [".obsidian", "Templates", "Daily"]))
         self.max_note_size_kb = obs_cfg.get("max_note_size_kb", 10)
         self.preview_chars = obs_cfg.get("preview_chars", 600)
@@ -55,19 +57,29 @@ class VaultReader:
 
     # ─── Публичный интерфейс ────────────────────────────────────────────────
 
-    def build_context(self, git_snapshots: list[dict] | None = None) -> dict:
+    def build_context(
+        self,
+        git_snapshots: list[dict] | None = None,
+        focus_project: str | None = None,
+    ) -> dict:
         """
         Собрать умный контекст для LLM.
-        Выбирает только релевантные заметки — не всё подряд.
+        focus_project — если задан, включаем только заметки этого проекта.
         """
         index = self.scan()
         kanban = self.parse_kanban()
 
-        # Сигнал из git: какие файлы/темы сейчас активны
         git_keywords = self._extract_git_keywords(git_snapshots or [])
-
-        # Отбираем релевантные заметки по всем сигналам
         selected = self._select_relevant(index, kanban, git_keywords)
+
+        # Фильтруем по фокус-проекту: другие проекты убираем полностью
+        if focus_project and focus_project in selected:
+            selected = {focus_project: selected[focus_project]}
+            kanban   = {k: v for k, v in kanban.items() if k == focus_project}
+        elif focus_project and focus_project not in selected:
+            # Фокус-проект не найден в vault — оставляем пустым, не подмешиваем чужое
+            selected = {}
+            kanban   = {}
 
         total_selected = sum(len(v) for v in selected.values())
         total_all = index.total_notes

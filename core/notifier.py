@@ -401,16 +401,9 @@ async def _focus_obsidian_wayland() -> None:
     except Exception:
         pass
 
-    # Метод 4: нативный Wayland — показываем уведомление с кнопкой «Открыть Obsidian»
-    # Пользователь кликает → окно выходит на передний план (Wayland разрешает по клику)
-    logger.debug("notifier: Wayland — авто-фокус недоступен, показываем кнопку")
-    asyncio.create_task(
-        notify_with_obsidian_action(
-            "📝 Заметка записана в Obsidian",
-            "Нажми чтобы открыть",
-            obsidian_path=None,  # файл уже открыт через URI выше
-        )
-    )
+    # На Wayland авто-фокус недоступен без разрешения пользователя.
+    # Уведомление с кнопкой уже отправлено через notify_tasks — дублировать не нужно.
+    logger.debug("notifier: Wayland — авто-фокус недоступен, используем уведомление из notify_tasks")
 
 
 async def _get_monitors() -> list[dict]:

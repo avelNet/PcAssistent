@@ -1,8 +1,10 @@
 """
-tts_preprocessor.py — подготовка текста для Silero TTS.
+tts_preprocessor.py — подготовка текста для TTS.
 
-Силеро не умеет произносить английские слова в русском тексте.
-Препроцессор конвертирует их в русскую фонетику до передачи в движок.
+Два режима:
+  silero — полная конвертация: словарь → CamelCase → побуквенная транслитерация
+  cloud  — словарь + CamelCase, неизвестные английские слова оставляем как есть
+            (Salute/Yandex/Google сами читают английский лучше транслитерации)
 """
 
 import re
@@ -59,15 +61,28 @@ def _replace_numbers(text: str) -> str:
     return re.sub(r"\d+[.,]\d+|\b\d+\b", _sub, text)
 
 
+# ─── Слова которые Salute читает лучше в оригинале (cloud passthrough) ────────
+# В cloud-режиме эти слова пропускаем через словарь и оставляем латиницей.
+# Salute читает английские git-термины и branch-имена естественнее русских транскрипций.
+_CLOUD_PASSTHROUGH: frozenset[str] = frozenset({
+    # git-термины — Salute читает их в английской манере лучше транскрипции
+    "git", "main", "master", "dev", "branch", "push", "pull", "merge",
+    "rebase", "stash", "clone", "fork", "commit", "commits", "develop",
+    "feature", "hotfix", "release", "origin", "remote", "upstream",
+    "debug", "build", "deploy", "setup", "init", "install", "run",
+    "start", "stop", "restart", "fix", "patch", "update",
+    "ok", "todo", "fixme", "pr", "ci", "cd",
+    # имена проектов — читаются как есть
+    "pcassistent", "tap2go", "getcourse", "practice",
+})
+
 # ─── Словарь технических терминов ────────────────────────────────────────────
-# Часто встречающиеся слова, которые должны звучать по-русски.
+# Слова где русская транскрипция лучше чем английское чтение Salute.
 # CamelCase и регистр учитываются отдельно — сравниваем по lower().
 
 _DICT: dict[str, str] = {
-    # git
-    "git": "гит", "github": "гитхаб", "commit": "коммит", "commits": "коммиты",
-    "push": "пуш", "pull": "пул", "merge": "мёрж", "branch": "ветка",
-    "rebase": "ребейс", "stash": "стэш", "clone": "клон", "fork": "форк",
+    # git — только то что Salute читает плохо
+    "github": "гитхаб",
     "main": "мейн", "master": "мастер", "dev": "дев", "develop": "девелоп",
     "feature": "фичер", "hotfix": "хотфикс", "release": "релиз",
     "origin": "ориджин", "remote": "ремоут", "upstream": "апстрим",
@@ -116,9 +131,18 @@ _DICT: dict[str, str] = {
     "user": "юзер", "token": "токен", "request": "риквест", "response": "респонс",
     "handler": "хэндлер", "manager": "менеджер", "worker": "воркер",
     "task": "таск", "queue": "кью", "event": "ивент", "hook": "хук",
+    # Слова с плохой автотранслитерацией
+    "threading": "трединг", "thread": "тред", "async": "асинк",
+    "inotify": "инотифай", "watchdog": "вотчдог", "watcher": "вотчер",
+    "workspace": "воркспейс", "snapshot": "снэпшот",
+    "trigger": "триггер", "collector": "коллектор", "collectors": "коллекторы",
+    "provider": "провайдер", "scheduler": "шедулер", "callback": "колбэк",
+    "pipeline": "пайплайн", "endpoint": "эндпоинт", "payload": "пэйлоад",
+    "openrouter": "опенроутер",
+    "pc": "пк", "course": "курс",
 }
 
-# Буква → русская фонема (для неизвестных слов)
+# Буква → русская фонема (для неизвестных слов, только режим silero)
 _PHONEMES: dict[str, str] = {
     "a": "а",  "b": "б",  "c": "к",  "d": "д",  "e": "е",
     "f": "ф",  "g": "г",  "h": "х",  "i": "и",  "j": "дж",
@@ -168,17 +192,18 @@ def _split_camel(word: str) -> list[str]:
     return [p for p in spaced.split(" ") if p]
 
 
-def _convert_token(token: str) -> str:
+def _convert_token(token: str, cloud: bool = False) -> str:
     """
-    Конвертировать один токен (слово без пробелов) в русскую фонетику.
-    Порядок: словарь → CamelCase-разбивка → побуквенно.
+    Конвертировать один токен в произносимый текст.
+    cloud=True → passthrough-слова и неизвестные оставляем латиницей (Salute читает сам).
+    cloud=False → побуквенная транслитерация (для Silero).
     """
-    # Прямое совпадение в словаре (case-insensitive)
     low = token.lower()
+    if cloud and low in _CLOUD_PASSTHROUGH:
+        return token  # Salute читает git/main/branch лучше нас
     if low in _DICT:
         return _DICT[low]
 
-    # Пробуем CamelCase-разбивку
     parts = _split_camel(token)
     if len(parts) > 1:
         converted = []
@@ -189,46 +214,40 @@ def _convert_token(token: str) -> str:
                 plow = part.lower()
                 if plow in _DICT:
                     converted.append(_DICT[plow])
+                elif cloud:
+                    converted.append(part)   # оставляем латиницей
                 else:
                     converted.append(_transliterate(part))
         return " ".join(converted)
 
-    # Однословный токен — побуквенно
+    if cloud:
+        return token   # неизвестное слово — Salute прочитает сам
     return _transliterate(token)
 
 
-def preprocess_for_tts(text: str) -> str:
+def preprocess_for_tts(text: str, cloud: bool = False) -> str:
     """
-    Подготовить текст для Silero:
-    - Конвертировать английские слова/имена в русскую фонетику
-    - Убрать лишние символы (/, _, ., #) из речевого потока
+    Подготовить текст для TTS:
+    - cloud=False (Silero): английские слова → русская фонетика полностью
+    - cloud=True  (Salute): словарь + CamelCase, неизвестные слова остаются латиницей
     """
 
     def _replace(m: re.Match) -> str:
-        token = m.group(0)
-        # Убираем расширения файлов: "config.yaml" → словарь отработает оба
-        # Обрабатываем как единицу: ищем весь токен целиком, потом части
-        # Разбиваем по точкам (foo.bar.baz → ["foo", "bar", "baz"])
+        token = m.group(0).rstrip("._")  # убираем trailing точки/подчёркивания
+        if not token:
+            return m.group(0)
         if "." in token:
             sub_parts = token.split(".")
-            converted = [_convert_token(p) for p in sub_parts if p]
-            # "main.py" → "мейн питон" — расширение часто не нужно в речи
-            # Убираем последнюю часть если это расширение (≤4 символа, всё маленькое)
-            if len(sub_parts) > 1 and len(sub_parts[-1]) <= 4:
+            converted = [_convert_token(p, cloud) for p in sub_parts if p]
+            # убираем расширение файла только если последняя часть ≤4 симв и вся строчная
+            if len(sub_parts) > 1 and len(sub_parts[-1]) <= 4 and sub_parts[-1].islower():
                 converted = converted[:-1]
-            return " ".join(converted)
-        return _convert_token(token)
+            return " ".join(converted) if converted else token
+        return _convert_token(token, cloud)
 
-    # Латинские слова → русская фонетика
-    result = re.sub(r"[A-Za-z][A-Za-z0-9_.]*", _replace, text)
-
-    # Служебные символы: слэш, подчёркивание → пробел
+    # Regex: не захватываем trailing точки (они часть пунктуации, не слова)
+    result = re.sub(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*", _replace, text)
     result = result.replace("/", " ").replace("_", " ")
-
-    # Числа → русские слова ("3 задачи" → "три задачи")
     result = _replace_numbers(result)
-
-    # Схлопываем лишние пробелы
     result = re.sub(r" {2,}", " ", result).strip()
-
     return result

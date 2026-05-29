@@ -1,0 +1,245 @@
+#!/usr/bin/env bash
+# install.sh — установщик PC Assistant
+# Использование: bash install.sh
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SERVICE_NAME="pc-assistant"
+SERVICE_FILE="$HOME/.config/systemd/user/${SERVICE_NAME}.service"
+CONFIG_LOCAL="$REPO_DIR/config.local.yaml"
+VENV_DIR="$REPO_DIR/.venv"
+
+# ─── Цвета ───────────────────────────────────────────────────────────────────
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+BLUE='\033[0;34m'; BOLD='\033[1m'; NC='\033[0m'
+
+info()    { echo -e "${BLUE}→${NC} $*"; }
+success() { echo -e "${GREEN}✓${NC} $*"; }
+warn()    { echo -e "${YELLOW}!${NC} $*"; }
+error()   { echo -e "${RED}✗${NC} $*" >&2; }
+header()  { echo -e "\n${BOLD}$*${NC}"; }
+
+# ─── 1. Проверка Python ───────────────────────────────────────────────────────
+header "Проверка зависимостей"
+
+PYTHON=""
+for py in python3.12 python3.11 python3; do
+    if command -v "$py" &>/dev/null; then
+        version=$("$py" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+        major=${version%%.*}; minor=${version##*.}
+        if [[ "$major" -ge 3 && "$minor" -ge 11 ]]; then
+            PYTHON="$py"
+            success "Python $version найден: $(command -v $py)"
+            break
+        fi
+    fi
+done
+
+if [[ -z "$PYTHON" ]]; then
+    error "Python 3.11+ не найден. Установи: sudo apt install python3.11"
+    exit 1
+fi
+
+# ─── 2. Системные пакеты ─────────────────────────────────────────────────────
+MISSING_PKGS=()
+check_cmd() {
+    if ! command -v "$1" &>/dev/null; then
+        MISSING_PKGS+=("$2")
+        warn "$1 не найден (пакет: $2)"
+    else
+        success "$1 найден"
+    fi
+}
+
+check_cmd aplay          alsa-utils
+check_cmd notify-send    libnotify-bin
+check_cmd wl-paste       wl-clipboard
+check_cmd git            git
+
+if [[ ${#MISSING_PKGS[@]} -gt 0 ]]; then
+    echo
+    warn "Отсутствующие пакеты: ${MISSING_PKGS[*]}"
+    read -rp "Установить автоматически через apt? [Y/n]: " install_pkgs
+    if [[ "${install_pkgs:-Y}" =~ ^[Yy] ]]; then
+        sudo apt install -y "${MISSING_PKGS[@]}"
+    else
+        warn "Продолжаем без некоторых пакетов — часть функций может не работать"
+    fi
+fi
+
+# ─── 3. Виртуальное окружение ─────────────────────────────────────────────────
+header "Установка зависимостей Python"
+
+if [[ ! -d "$VENV_DIR" ]]; then
+    info "Создаю виртуальное окружение..."
+    "$PYTHON" -m venv "$VENV_DIR"
+fi
+success "venv: $VENV_DIR"
+
+info "Устанавливаю Python-пакеты..."
+"$VENV_DIR/bin/pip" install --upgrade pip -q
+"$VENV_DIR/bin/pip" install -r "$REPO_DIR/requirements.txt" -q
+success "Зависимости установлены"
+
+# ─── 4. Конфигурация ─────────────────────────────────────────────────────────
+header "Настройка конфигурации"
+
+if [[ -f "$CONFIG_LOCAL" ]]; then
+    warn "config.local.yaml уже существует — пропускаем создание"
+    warn "Если нужно изменить ключи — отредактируй: $CONFIG_LOCAL"
+else
+    echo
+    echo "Для работы нужен хотя бы один LLM-провайдер."
+    echo "Оставь поле пустым чтобы пропустить."
+    echo
+
+    read -rp "OpenRouter API key (https://openrouter.ai/keys): " OPENROUTER_KEY
+    read -rp "Groq API key (https://console.groq.com/keys):     " GROQ_KEY
+    echo
+    echo "TTS — голосовые уведомления (опционально)."
+    echo "SaluteSpeech: зарегистрируйся на developers.sber.ru → создай проект → скопируй credentials."
+    read -rp "SaluteSpeech credentials (base64, или Enter чтобы пропустить): " SALUTE_KEY
+
+    {
+        echo "# Локальные секреты — не коммитить в git"
+        echo "llm:"
+        echo "  provider: \"auto\""
+        echo ""
+        if [[ -n "$OPENROUTER_KEY" ]]; then
+            echo "openrouter:"
+            echo "  api_key: \"$OPENROUTER_KEY\""
+            echo ""
+        fi
+        if [[ -n "$GROQ_KEY" ]]; then
+            echo "groq:"
+            echo "  api_key: \"$GROQ_KEY\""
+            echo ""
+        fi
+        if [[ -n "$SALUTE_KEY" ]]; then
+            echo "salute_speech:"
+            echo "  credentials: \"$SALUTE_KEY\""
+            echo "  scope: \"SALUTE_SPEECH_PERS\""
+            echo ""
+            echo "voice:"
+            echo "  engine: \"salute\""
+            echo "  voice: \"Nec_24000\""
+        else
+            echo "voice:"
+            echo "  engine: \"silero\""
+            echo "  silero_speaker: \"xenia\""
+        fi
+    } > "$CONFIG_LOCAL"
+    success "Создан $CONFIG_LOCAL"
+fi
+
+# ─── 5. Obsidian vault ───────────────────────────────────────────────────────
+header "Настройка Obsidian"
+
+CURRENT_OBSIDIAN=$(grep -E "^\s*shared_root:" "$REPO_DIR/config.yaml" | awk '{print $2}' | tr -d '"' | sed "s|~|$HOME|g")
+echo "Текущий путь к Obsidian vault: ${CURRENT_OBSIDIAN:-не задан}"
+read -rp "Путь к папке Obsidian (Enter — оставить текущий): " OBS_PATH
+
+if [[ -n "$OBS_PATH" ]]; then
+    OBS_PATH="${OBS_PATH/#\~/$HOME}"
+    if [[ ! -d "$OBS_PATH" ]]; then
+        warn "Папка не найдена: $OBS_PATH"
+    else
+        # Дописываем в config.local.yaml
+        {
+            echo ""
+            echo "obsidian:"
+            echo "  shared_root: \"$OBS_PATH\""
+            echo "  enabled: true"
+        } >> "$CONFIG_LOCAL"
+        success "Obsidian vault: $OBS_PATH"
+    fi
+fi
+
+# ─── 6. Папки с проектами ────────────────────────────────────────────────────
+header "Папки с git-проектами"
+
+echo "Текущие папки для сканирования:"
+grep -A5 "scan_dirs:" "$REPO_DIR/config.yaml" | grep '- "' | sed 's/.*- "/  - /' | tr -d '"'
+echo
+read -rp "Добавить свою папку с проектами (Enter — пропустить): " DEV_PATH
+
+if [[ -n "$DEV_PATH" ]]; then
+    DEV_PATH="${DEV_PATH/#\~/$HOME}"
+    {
+        echo ""
+        echo "collectors:"
+        echo "  git:"
+        echo "    scan_dirs:"
+        echo "      - \"$DEV_PATH\""
+        echo "  filesystem:"
+        echo "    watch_dirs:"
+        echo "      - \"$DEV_PATH\""
+    } >> "$CONFIG_LOCAL"
+    success "Добавлена папка: $DEV_PATH"
+fi
+
+# ─── 7. Systemd сервис ───────────────────────────────────────────────────────
+header "Установка systemd сервиса"
+
+UID_NUM=$(id -u)
+mkdir -p "$(dirname "$SERVICE_FILE")"
+
+# Генерируем сервис с актуальными путями
+cat > "$SERVICE_FILE" << EOF
+[Unit]
+Description=PC Assistant — локальный AI-ассистент разработчика
+Documentation=https://github.com/avelNet/PcAssistent
+After=network-online.target graphical-session.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${VENV_DIR}/bin/python3 ${REPO_DIR}/main.py
+WorkingDirectory=${REPO_DIR}
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+Environment=DISPLAY=:0
+Environment=XDG_RUNTIME_DIR=/run/user/${UID_NUM}
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${UID_NUM}/bus
+Environment=PULSE_SERVER=unix:/run/user/${UID_NUM}/pulse/native
+Environment=PIPEWIRE_RUNTIME_DIR=/run/user/${UID_NUM}
+ExecStartPre=/bin/sleep 5
+
+[Install]
+WantedBy=default.target
+EOF
+
+success "Сервис записан: $SERVICE_FILE"
+
+systemctl --user daemon-reload
+
+read -rp "Включить автозапуск при входе в систему? [Y/n]: " enable_service
+if [[ "${enable_service:-Y}" =~ ^[Yy] ]]; then
+    systemctl --user enable "$SERVICE_NAME"
+    success "Автозапуск включён"
+fi
+
+read -rp "Запустить сервис прямо сейчас? [Y/n]: " start_service
+if [[ "${start_service:-Y}" =~ ^[Yy] ]]; then
+    systemctl --user start "$SERVICE_NAME"
+    sleep 3
+    if systemctl --user is-active --quiet "$SERVICE_NAME"; then
+        success "Сервис запущен успешно"
+    else
+        error "Сервис не запустился. Проверь логи:"
+        echo "  journalctl --user -u pc-assistant -n 30"
+    fi
+fi
+
+# ─── 8. Итог ─────────────────────────────────────────────────────────────────
+header "Установка завершена"
+
+echo
+echo -e "  Статус:    ${BOLD}systemctl --user status pc-assistant${NC}"
+echo -e "  Логи:      ${BOLD}journalctl --user -u pc-assistant -f${NC}"
+echo -e "  Конфиг:    ${BOLD}$CONFIG_LOCAL${NC}"
+echo -e "  Остановить: ${BOLD}systemctl --user stop pc-assistant${NC}"
+echo
+success "PC Assistant установлен!"

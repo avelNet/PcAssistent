@@ -10,17 +10,13 @@ psutil>=5.9
 # Конфиг
 pyyaml>=6.0
 
-# Голос — нейросетевой TTS (модель ~358 MB скачивается при первом запуске)
-supertonic
-# Резервный вариант (устанавливается отдельно: pip install piper-tts)
-# piper-tts>=1.2
+# Офлайн TTS (Silero v4) — опционально, fallback если cloud TTS недоступен
+# Раскомментируй если хочешь использовать engine: "silero" в config.yaml
+# torch>=2.0        # pip install torch --index-url https://download.pytorch.org/whl/cpu
+# scipy>=1.11
 
-# UI — GTK трей (требует системный пакет: apt install python3-gi gir1.2-ayatanaappindicator3-0.1)
-# PyGObject>=3.44
-
-# Статический анализ (инструменты, не runtime зависимости)
-# ruff>=0.4
-# mypy>=1.9
-
-# Системные утилиты — НЕ pip-пакеты, устанавливаются через apt:
-# sudo apt install xdotool xprintidle xclip alsa-utils
+# Системные утилиты (устанавливаются через apt, не pip):
+#   alsa-utils   — aplay для воспроизведения WAV (cloud TTS: salute/yandex)
+#   libnotify-bin — notify-send ≥0.8 для кликабельных уведомлений
+#   wl-clipboard  — wl-paste для буфера обмена на Wayland
+#   xdotool       — управление окнами (опционально, X11/XWayland)

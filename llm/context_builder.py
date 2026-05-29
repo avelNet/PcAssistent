@@ -69,11 +69,11 @@ class ContextBuilder:
 
         # Запускаем все источники параллельно
         source_tasks = {
-            "git":          self._get_git_context(),
-            "history":      self._get_task_history(),
-            "today_tasks":  context_store.get_tasks_for_date(),
+            "git":          self._get_git_context(focus),
+            "history":      self._get_task_history(focus),
+            "today_tasks":  context_store.get_tasks_for_date(project=focus),
             "errors":       self._get_errors_context(focus),
-            "obsidian":     self._get_vault_context(),
+            "obsidian":     self._get_vault_context(focus),
             "clipboard":    self._get_clipboard_context(),
             "ide":          self._get_jetbrains_context(),
             "productivity": self._get_productivity_context(),
@@ -134,22 +134,42 @@ class ContextBuilder:
 
     # ─── Источники ──────────────────────────────────────────────────────────
 
-    async def _get_git_context(self) -> list[dict]:
-        """Актуальные снапшоты репозиториев."""
+    async def _get_git_context(self, focus: str | None = None) -> list[dict]:
+        """
+        Снапшоты репозиториев.
+        Если есть фокус — активный проект первым и полным, остальные только именем/веткой.
+        """
         if self.git_watcher:
             snapshots = await self.git_watcher.get_all_snapshots()
-            if snapshots:
-                return snapshots
+        else:
+            recent = await context_store.get_all_recent(hours=48)
+            snapshots = [
+                item["data"] for item in recent
+                if item["source"] == "git" and isinstance(item["data"], dict)
+            ]
 
-        # Фолбэк: последние из SQLite
-        recent = await context_store.get_all_recent(hours=48)
-        return [
-            item["data"] for item in recent
-            if item["source"] == "git" and isinstance(item["data"], dict)
+        if not snapshots or not focus:
+            return snapshots
+
+        active = [s for s in snapshots if s.get("name") == focus]
+        others = [
+            {"name": s["name"], "branch": s.get("branch", "?"), "background": True}
+            for s in snapshots if s.get("name") != focus
         ]
+        if not active:
+            return snapshots  # фокус не найден — отдаём всё как есть
 
-    async def _get_task_history(self) -> list[dict]:
-        return await context_store.get_task_history(days=3)
+        logger.debug(
+            "ContextBuilder: git — активный '%s', фоновых: %d",
+            focus, len(others)
+        )
+        return active + others
+
+    async def _get_task_history(self, focus: str | None = None) -> list[dict]:
+        history = await context_store.get_task_history(days=3)
+        if focus:
+            history = [t for t in history if t.get("project") == focus]
+        return history
 
     async def _get_errors_context(self, focus: str | None) -> list[dict]:
         """
@@ -207,21 +227,20 @@ class ContextBuilder:
             logger.debug("ContextBuilder: progress_tracker ошибка — %s", e)
             return {}
 
-    async def _get_vault_context(self) -> dict:
+    async def _get_vault_context(self, focus: str | None = None) -> dict:
         """
-        Читает все Obsidian заметки из root-папки.
-        Передаёт git-снапшоты для умного отбора связанных заметок.
-        Возвращает контекст по проектам.
+        Читает Obsidian заметки.
+        Если есть фокус — только заметки активного проекта.
         """
         if not self._vault_reader:
             return {}
 
         try:
-            # Получаем git-данные для сигнала релевантности заметок
-            git_snapshots = await self._get_git_context()
+            git_snapshots = await self._get_git_context(focus)
 
             context = await asyncio.to_thread(
-                self._vault_reader.build_context, git_snapshots
+                self._vault_reader.build_context, git_snapshots,
+                focus_project=focus,
             )
             total = context.get("total_notes", 0)
             selected = context.get("selected_notes", 0)

@@ -2,16 +2,11 @@
 voice/tts_engine.py — синтез речи.
 
 Поддерживаемые движки:
+  salute      — SberSaluteSpeech (облако, нативный русский, рекомендуется)
+  silero      — Silero v4 (офлайн, ~350 MB модель)
   supertonic  — нейросетевой TTS (supertone-inc/supertonic), русский голос F1/M1
-                модель (~358 MB) скачивается автоматически при первом запуске
   piper       — офлайн Piper TTS, pipeline: piper --output-raw | aplay
   espeak-ng   — запасной вариант, системный пакет
-
-Приоритет при engine="supertonic":
-  supertonic → espeak-ng (если импорт не удался)
-
-Приоритет при engine="piper":
-  piper (если .onnx файл существует) → espeak-ng
 """
 
 import asyncio
@@ -31,6 +26,7 @@ class TTSEngine:
     _shared_supertonic: Optional[Any] = None
 
     def __init__(self, config: dict):
+        self._config = config
         voice_cfg = config.get("voice", {})
         self.enabled:     bool = voice_cfg.get("enabled", False)
         self.engine:      str  = voice_cfg.get("engine", "supertonic")
@@ -50,11 +46,13 @@ class TTSEngine:
         self._silero_instance:     Optional[Any] = None
 
     async def warmup(self) -> None:
-        """Предзагрузить модель TTS чтобы первый speak() не задерживался."""
+        """Предзагрузить модель / токен TTS чтобы первый speak() не задерживался."""
         if not self.enabled:
             return
         try:
-            if self.engine == "silero":
+            if self.engine == "salute":
+                await self._get_salute().warmup()
+            elif self.engine == "silero":
                 await self._get_silero()
             elif self.engine == "supertonic":
                 await self._get_supertonic()
@@ -68,7 +66,9 @@ class TTSEngine:
         if not self.enabled or not text.strip():
             return
 
-        if self.engine == "silero":
+        if self.engine == "salute":
+            await self._speak_salute(text)
+        elif self.engine == "silero":
             await self._speak_silero(text)
         elif self.engine == "supertonic":
             await self._speak_supertonic(text)
@@ -318,6 +318,22 @@ class TTSEngine:
             logger.warning("tts: piper или aplay не найден — %s", e)
         except Exception as e:
             logger.error("tts: piper ошибка — %s", e)
+
+    # ──────────────────────────────────────────────────── salute engine ──
+
+    def _get_salute(self):
+        """Lazy-инициализация SaluteTTS (singleton на уровне класса)."""
+        if not hasattr(TTSEngine, "_shared_salute") or TTSEngine._shared_salute is None:
+            from voice.salute_tts import SaluteTTS
+            TTSEngine._shared_salute = SaluteTTS(self._config)
+        return TTSEngine._shared_salute
+
+    async def _speak_salute(self, text: str) -> None:
+        try:
+            await self._get_salute().speak(text)
+        except Exception as e:
+            logger.error("tts: salute ошибка — %s, fallback на espeak", e)
+            await self._speak_fallback(text)
 
     # ─────────────────────────────────────────────────── fallback engine ──
 

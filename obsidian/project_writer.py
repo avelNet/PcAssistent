@@ -99,79 +99,20 @@ class ProjectWriter:
         branch: Optional[str] = None,
     ) -> None:
         """
-        При переключении фокуса на new_project — прочитать накопленные фоновые
-        задачи из Obsidian и озвучить их через TTS.
-        Вызывается из TriggerEngine до основного LLM-цикла.
+        Немедленный анонс переключения проекта — только название и ветка.
+        Свежие задачи придут после LLM-анализа (voice=True там).
         """
-        if not self.enabled or not self.shared_root:
-            return
-
-        daily = self.shared_root / new_project / "Daily" / f"{_today_str()}.md"
-        if not daily.exists():
-            # Озвучим хотя бы факт переключения с указанием ветки
-            branch_str = f" на ветке {branch}" if branch else ""
-            try:
-                from voice.speech_output import SpeechOutput
-                sp = SpeechOutput(config)
-                await sp.tts.speak(
-                    f"Переключаюсь на проект {new_project}{branch_str}. "
-                    f"Задачи ещё не подготовлены — сейчас проанализирую."
-                )
-            except Exception:
-                pass
-            return
-
-        try:
-            content = await asyncio.to_thread(daily.read_text, "utf-8")
-        except Exception:
-            return
-
-        # Парсим чекбоксы из файла
-        import re
-        tasks = []
-        for line in content.splitlines():
-            m = re.match(r'\s*-\s+\[( |x)\]\s+(.+?)(?:\s+<!--[^>]*-->)?\s*$', line)
-            if m and m.group(1) == " ":  # только невыполненные
-                tasks.append({"title": m.group(2).strip()})
-
-        if not tasks:
-            logger.debug("ProjectWriter: фоновые задачи для '%s' — все выполнены", new_project)
-            return
-
-        logger.info(
-            "ProjectWriter: озвучиваю %d фоновых задач для '%s' (ветка=%s)",
-            len(tasks), new_project, branch or "?"
-        )
-
-        # Одно кликабельное уведомление — имя проекта в заголовке, без задержки
-        # (отдельный notify-send + portal с задержкой приводили к замене друг друга
-        #  в GNOME, т.к. оба уведомления от одного приложения)
-        try:
-            from core.notifier import notify_tasks
-            import asyncio as _aio
-            branch_str = f" ({branch})" if branch else ""
-            self._pending_focus_notify = _aio.create_task(
-                notify_tasks(
-                    tasks, trigger="focus_switch",
-                    obsidian_path=str(daily),
-                    title=f"🎯 {new_project}{branch_str}",
-                ),
-                name="focus_switch_tasks_notify",
-            )
-        except Exception as e:
-            logger.debug("ProjectWriter: notify (переключение+задачи) ошибка — %s", e)
+        branch_str = f", ветка {branch}" if branch else ""
+        phrase = f"Переключаюсь на {new_project}{branch_str}."
 
         try:
             from voice.speech_output import SpeechOutput
+            from voice.tts_preprocessor import preprocess_for_tts
             sp = SpeechOutput(config)
-            branch_str_voice = f" на ветке {branch}" if branch else ""
-            prologue = (
-                f"Переключаюсь на проект {new_project}{branch_str_voice}. "
-                f"Вот задачи которые я нашла в заметках:"
-            )
-            await sp.speak_tasks(tasks, prologue=prologue, trigger="focus_switch")
+            cloud = sp.tts.engine == "salute"
+            await sp.tts.speak(preprocess_for_tts(phrase, cloud=cloud))
         except Exception as e:
-            logger.warning("ProjectWriter: TTS ошибка при переключении фокуса: %s", e)
+            logger.warning("ProjectWriter: TTS announce ошибка — %s", e)
 
     # ─── Внутренние методы ───────────────────────────────────────────────────
 

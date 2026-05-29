@@ -62,6 +62,7 @@ class GitWatcher:
         self._queue: asyncio.Queue = asyncio.Queue()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._repos: list[Path] = []
+        self._branch_cache: dict[str, str] = {}  # repo_path → текущая ветка
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
@@ -160,6 +161,23 @@ class GitWatcher:
         try:
             snapshot = await asyncio.to_thread(self._collect_snapshot, repo_path)
             await context_store.save_context("git", {"repo": str(repo_path), **snapshot})
+
+            new_branch = snapshot.get("branch", "")
+            prev_branch = self._branch_cache.get(str(repo_path))
+
+            # Смена ветки — отдельное событие с пересчётом контекста
+            if prev_branch and new_branch and prev_branch != new_branch:
+                logger.info("git.branch_changed: %s %s → %s",
+                            repo_path.name, prev_branch, new_branch)
+                await self.bus.emit("git.branch_changed", {
+                    "repo":        str(repo_path),
+                    "name":        repo_path.name,
+                    "branch":      new_branch,
+                    "prev_branch": prev_branch,
+                    "snapshot":    snapshot,
+                })
+
+            self._branch_cache[str(repo_path)] = new_branch
             await self.bus.emit("git.changed", {"repo": str(repo_path), "snapshot": snapshot})
             logger.info("git.changed: %s [%s] %d незакоммиченных",
                         repo_path.name, snapshot.get("branch", "?"),

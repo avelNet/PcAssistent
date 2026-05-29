@@ -229,6 +229,8 @@ class TaskSyncer:
                         "TaskSyncer: вечерний итог записан → '%s'", path
                     )
             else:
+                # Понижаем приоритет зависших задач перед записью
+                proj_tasks = await self._apply_stuck_downgrades(proj_tasks, project)
                 # Smart merge: сохраняем [x] задачи, перезаписываем файл
                 if self.client.shared_root:
                     path = await self._smart_write_daily_fs(
@@ -243,6 +245,62 @@ class TaskSyncer:
                         "TaskSyncer: дейли заметка → '%s' (%d задач, trigger=%s)",
                         path, len(proj_tasks), trigger,
                     )
+
+    # ─── Зависшие задачи ────────────────────────────────────────────────────
+
+    async def _apply_stuck_downgrades(
+        self, tasks: list[dict], project: Optional[str]
+    ) -> list[dict]:
+        """
+        Задачи завиcшие 3+ дней → понижаем приоритет на одну ступень.
+        HIGH → MED, MED → LOW. LOW не трогаем.
+        Отправляем одно уведомление если есть зависшие.
+        """
+        from obsidian.progress_tracker import ProgressTracker
+        tracker = ProgressTracker(days=7)
+        progress = await tracker.build()
+        stuck_list = progress.get("stuck_tasks", [])
+
+        if not stuck_list:
+            return tasks
+
+        # Фильтруем по проекту
+        if project:
+            stuck_list = [s for s in stuck_list if s.get("project") == project]
+
+        if not stuck_list:
+            return tasks
+
+        stuck_titles = {s["title"].strip().lower(): s["days_count"] for s in stuck_list}
+        downgraded: list[str] = []
+        _down = {"HIGH": "MED", "MED": "LOW"}
+
+        for task in tasks:
+            title_low = task.get("title", "").strip().lower()
+            if title_low in stuck_titles and task.get("priority") in _down:
+                days = stuck_titles[title_low]
+                old_p = task["priority"]
+                task["priority"] = _down[old_p]
+                downgraded.append(f"{task['title']} ({days}д)")
+                logger.info(
+                    "TaskSyncer: зависшая задача '%s' — %s→%s (%d дней)",
+                    task["title"], old_p, task["priority"], days,
+                )
+
+        if downgraded:
+            from core.notifier import notify
+            body = "Понижен приоритет: " + "; ".join(downgraded[:3])
+            if len(downgraded) > 3:
+                body += f" и ещё {len(downgraded) - 3}"
+            await notify(
+                "⏳ Зависшие задачи",
+                body,
+                urgency="low",
+                timeout_ms=8000,
+                icon="appointment-missed",
+            )
+
+        return tasks
 
     # ─── Общий хелпер: smart merge + запись в ФС ────────────────────────────
 
@@ -291,24 +349,6 @@ class TaskSyncer:
             if match:
                 task["done"] = True
                 task["done_by"] = match.get("done_by", "")
-
-        # Сохраняем незакрытые [ ] задачи из существующего файла
-        # которые не совпадают с новыми от LLM (перенос с прошлого дня)
-        if fs_path.exists():
-            existing_undone = _parse_undone_tasks(
-                await asyncio.to_thread(fs_path.read_text, "utf-8")
-            )
-            new_titles = {_norm_title(t.get("title", "")) for t in tasks}
-            carried = [
-                t for t in existing_undone
-                if _norm_title(t.get("title", "")) not in new_titles
-            ]
-            if carried:
-                tasks = carried + tasks
-                logger.debug(
-                    "TaskSyncer: перенесено %d незакрытых задач с предыдущего дня",
-                    len(carried),
-                )
 
         # Дедупликация по смыслу — убираем задачи которые описывают одно и то же
         # разными словами (LLM каждый раз генерирует новые UUID и формулировки)

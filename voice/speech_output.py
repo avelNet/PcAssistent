@@ -26,7 +26,9 @@ _TRIGGER_GREETING = {
     "user_returned":       "С возвращением! Напоминаю контекст.",
     "evening_summary":     "Итог дня.",
     "manual":              "Готово.",
-    "focus_switch":        "",  # у focus_switch свой заголовок — в title уведомления
+    "focus_switch":        "",
+    "branch_switch":       "",  # анонс ветки уже сказан голосом до LLM
+    "git_activity":        "",
 }
 
 
@@ -94,9 +96,11 @@ class SpeechOutput:
         if not self.tts.enabled or not tasks:
             return
 
-        # Все фразы проходят через препроцессор: числа → слова, англ → фонетика
+        # cloud=True для Salute/Yandex — неизвестные слова оставляем латиницей
+        cloud = self.tts.engine == "salute"
+
         async def speak(text: str) -> None:
-            await self.tts.speak(preprocess_for_tts(text))
+            await self.tts.speak(preprocess_for_tts(text, cloud=cloud))
 
         # 1. Приветствие
         greeting = _TRIGGER_GREETING.get(trigger, "")
@@ -131,12 +135,10 @@ class SpeechOutput:
 
         # 5. Сами задачи — каждая отдельно, чтобы не было обрезки
         for task in top:
-            title    = preprocess_for_tts(task.get("title", ""))
+            title    = task.get("title", "")
             priority = task.get("priority", "LOW")
             if priority == "HIGH":
                 line = f"Срочно: {title}."
-            elif priority == "MED":
-                line = f"{title}."
             else:
                 line = f"{title}."
             await speak(line)

@@ -179,16 +179,25 @@ async def save_tasks(tasks: list[dict]) -> None:
     logger.info("context_store: сохранено %d задач", len(tasks))
 
 
-async def get_tasks_for_date(for_date: str | None = None) -> list[dict]:
-    """Задачи за конкретный день (по умолчанию сегодня)."""
+async def get_tasks_for_date(
+    for_date: str | None = None,
+    project: str | None = None,
+) -> list[dict]:
+    """Задачи за конкретный день (по умолчанию сегодня), опционально по проекту."""
     for_date = for_date or date.today().isoformat()
 
     def _do():
         conn = _conn()
-        rows = conn.execute(
-            "SELECT * FROM tasks WHERE date=? ORDER BY priority DESC, created_at",
-            (for_date,),
-        ).fetchall()
+        if project:
+            rows = conn.execute(
+                "SELECT * FROM tasks WHERE date=? AND project=? ORDER BY priority DESC, created_at",
+                (for_date, project),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM tasks WHERE date=? ORDER BY priority DESC, created_at",
+                (for_date,),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     return await _run(_do)
