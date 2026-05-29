@@ -21,12 +21,17 @@ logger = logging.getLogger(__name__)
 
 
 class TriggerEngine:
+    # Триггеры требующие высокого качества ответа — используют Groq первым
+    _HEAVY_TRIGGERS = {"morning_briefing", "evening_summary", "manual"}
+
     def __init__(self, config: dict, bus: EventBus,
-                 llm, context_builder: ContextBuilder):
+                 llm, context_builder: ContextBuilder,
+                 llm_heavy=None):
         self.config = config.get("trigger", {})
         self._full_config = config  # нужен для SpeechOutput
         self.bus = bus
-        self.llm = llm
+        self.llm = llm              # openrouter → groq  (частые/лёгкие)
+        self.llm_heavy = llm_heavy or llm  # groq → openrouter (сложные)
         self.context_builder = context_builder
 
         self._last_run_ts: float = 0
@@ -256,11 +261,14 @@ class TriggerEngine:
         return None
 
     async def _run_llm(self, trigger: str, voice: bool, extra: dict | None = None) -> None:
-        """Полный цикл: контекст → промпт → Ollama → задачи → события."""
+        """Полный цикл: контекст → промпт → LLM → задачи → события."""
         self._running = True
         start = time.monotonic()
+        # Тяжёлые триггеры → Groq (качество важнее), остальные → OpenRouter (лимиты)
+        llm = self.llm_heavy if trigger in self._HEAVY_TRIGGERS else self.llm
         logger.info("═" * 50)
-        logger.info("TriggerEngine: запуск LLM [триггер=%s, голос=%s]", trigger, voice)
+        logger.info("TriggerEngine: запуск LLM [триггер=%s, провайдер=%s]",
+                    trigger, "heavy" if trigger in self._HEAVY_TRIGGERS else "light")
 
         try:
             # 1. Собираем контекст
@@ -278,9 +286,9 @@ class TriggerEngine:
                 return
 
             # 3. Проверяем доступность LLM
-            if not await self.llm.check_availability():
-                provider = self._full_config.get("llm", {}).get("provider", "ollama")
-                logger.error("TriggerEngine: LLM недоступна! провайдер=%s", provider)
+            if not await llm.check_availability():
+                provider = "heavy" if trigger in self._HEAVY_TRIGGERS else "light"
+                logger.error("TriggerEngine: LLM недоступна! [%s]", provider)
                 from core.notifier import notify_error
                 await notify_error(f"LLM недоступна ({provider}). Проверь ключ или соединение.")
                 return
@@ -289,7 +297,7 @@ class TriggerEngine:
             system_prompt, user_prompt = prompt_engine.build(trigger, context)
 
             # 5. Запрашиваем LLM
-            raw_text, meta = await self.llm.complete(system_prompt, user_prompt)
+            raw_text, meta = await llm.complete(system_prompt, user_prompt)
 
             # 6. Парсим задачи
             result = task_parser.parse(raw_text)

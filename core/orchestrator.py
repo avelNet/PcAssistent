@@ -138,13 +138,16 @@ class Orchestrator:
         self.static_analyzer = StaticAnalyzer(self.config, self.bus)
         self.static_analyzer.subscribe()
 
-        # 4. LLM клиент (Ollama или OpenRouter — зависит от config.llm.provider)
-        self.llm_client = create_llm_client(self.config)
+        # 4. LLM клиенты — два: лёгкий (частые запросы) и тяжёлый (сложные задачи)
+        # auto   = openrouter → groq  (focus_switch, user_returned, errors_spike)
+        # heavy  = groq → openrouter  (morning_briefing, evening_summary, manual)
+        self.llm_client = create_llm_client(self.config)   # provider из config (auto)
+        heavy_cfg = {**self.config, "llm": {"provider": "heavy"}}
+        self.llm_heavy = create_llm_client(heavy_cfg)
 
-        # Для OpenRouter: фоновый пробинг чтобы к первому реальному запросу
-        # уже знать рабочую модель (не тратить время на ротацию)
-        if hasattr(self.llm_client, "start_background_probe"):
-            self.llm_client.start_background_probe()
+        for client in (self.llm_client, self.llm_heavy):
+            if hasattr(client, "start_background_probe"):
+                client.start_background_probe()
 
         # 4b. StatsBuilder (нужен session_tracker и git_watcher)
         self.stats_builder = StatsBuilder(
@@ -167,7 +170,8 @@ class Orchestrator:
 
         # 6. TriggerEngine — подписывается на события
         self.trigger_engine = TriggerEngine(
-            self.config, self.bus, self.llm_client, self.context_builder
+            self.config, self.bus, self.llm_client, self.context_builder,
+            llm_heavy=self.llm_heavy,
         )
 
         # 7. Obsidian клиент + синхронизатор задач
@@ -243,11 +247,12 @@ class Orchestrator:
         if self.obsidian:
             await self.obsidian.close()
 
-        # Закрываем LLM клиент (Ollama — выгружает модель из RAM, OpenRouter — закрывает сессию)
-        if self.llm_client:
-            if hasattr(self.llm_client, "unload_model"):
-                await self.llm_client.unload_model()
-            await self.llm_client.close()
+        # Закрываем LLM клиенты
+        for client in (self.llm_client, getattr(self, "llm_heavy", None)):
+            if client:
+                if hasattr(client, "unload_model"):
+                    await client.unload_model()
+                await client.close()
 
         # Закрываем БД
         await db.close()
