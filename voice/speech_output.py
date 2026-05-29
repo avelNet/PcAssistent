@@ -1,8 +1,13 @@
 """
 voice/speech_output.py — высокоуровневый интерфейс озвучки.
 
-Форматирует задачи/статистику в короткие русские фразы и передаёт в TTSEngine.
-Ограничения: максимум 5 задач, 300 символов пролога (дальше слушать неудобно).
+Структура брифинга:
+  1. Приветствие по триггеру
+  2. Пролог (анализ LLM, ≤300 симв)
+  3. Сводка: "У вас X срочных, Y важных и Z обычных задач."
+  4. Рекомендация: "Предлагаю начать с самых срочных."
+  5. Топ-3 задачи (каждая — отдельный speak, нет риска обрезки)
+  6. Завершение: "Удачи! Работаю в фоне."
 """
 
 import logging
@@ -12,10 +17,8 @@ from voice.tts_preprocessor import preprocess_for_tts
 
 logger = logging.getLogger(__name__)
 
-_MAX_TASKS    = 3   # больше 3 задач слушать бессмысленно — не запомнить
-_MAX_PROLOGUE = 300
-
-_PRIORITY_WORD = {"HIGH": "срочно", "MED": "важно", "LOW": ""}
+_MAX_TASKS    = 3   # больше 3 не запомнить
+_MAX_PROLOGUE = 280
 
 _TRIGGER_GREETING = {
     "morning_briefing":    "Доброе утро! Задачи на сегодня.",
@@ -23,7 +26,40 @@ _TRIGGER_GREETING = {
     "user_returned":       "С возвращением! Напоминаю контекст.",
     "evening_summary":     "Итог дня.",
     "manual":              "Готово.",
+    "focus_switch":        "",  # у focus_switch свой заголовок — в title уведомления
 }
+
+
+def _priority_phrase(count: int, high_word: str, low_word: str) -> str:
+    """'одна срочная' | '3 срочных'"""
+    if count == 1:
+        return f"одна {high_word}"
+    return f"{count} {low_word}"
+
+
+def _build_summary(high: int, med: int, low: int) -> str:
+    """'У вас 2 срочных, 3 важных и одна обычная.'"""
+    parts = []
+    if high:
+        parts.append(_priority_phrase(high, "срочная", "срочных"))
+    if med:
+        parts.append(_priority_phrase(med, "важная", "важных"))
+    if low:
+        parts.append(_priority_phrase(low, "обычная", "обычных"))
+
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return f"У вас {parts[0]}."
+    return "У вас " + ", ".join(parts[:-1]) + " и " + parts[-1] + "."
+
+
+def _recommendation(high: int, med: int) -> str:
+    if high:
+        return "Предлагаю начать с самых срочных."
+    if med:
+        return "Предлагаю начать с важных задач."
+    return "Начнём с первой по списку."
 
 
 class SpeechOutput:
@@ -37,61 +73,67 @@ class SpeechOutput:
         trigger: str = "",
     ) -> None:
         """
-        Утренний/послесессионный брифинг: приветствие + пролог + топ-5 задач.
-        Голос — только если voice.enabled = true.
+        Брифинг по задачам. Каждый логический блок озвучивается отдельным вызовом
+        — Silero не обрезает текст при большом объёме.
         """
         if not self.tts.enabled or not tasks:
             return
 
-        parts: list[str] = []
+        speak = self.tts.speak  # shortcut
 
-        # Приветствие по триггеру
+        # 1. Приветствие
         greeting = _TRIGGER_GREETING.get(trigger, "")
         if greeting:
-            parts.append(greeting)
+            await speak(greeting)
 
-        # Пролог — максимум 300 символов, конвертируем английские слова
+        # 2. Пролог
         if prologue:
             short = prologue.strip()[:_MAX_PROLOGUE]
-            if len(prologue.strip()) > _MAX_PROLOGUE:
-                short += "..."
-            parts.append(preprocess_for_tts(short))
+            await speak(preprocess_for_tts(short))
 
-        # Задачи — сортируем HIGH→MED→LOW, озвучиваем топ-3 (больше не запомнить)
+        # 3. Сортируем HIGH→MED→LOW
         sorted_tasks = sorted(
             tasks,
             key=lambda t: {"HIGH": 0, "MED": 1, "LOW": 2}.get(t.get("priority", "LOW"), 3),
-        )[:_MAX_TASKS]
-
+        )
         total = len(tasks)
-        shown = len(sorted_tasks)
+        top   = sorted_tasks[:_MAX_TASKS]
 
+        high = sum(1 for t in tasks if t.get("priority") == "HIGH")
+        med  = sum(1 for t in tasks if t.get("priority") == "MED")
+        low  = total - high - med
+
+        # 4. Сводка + рекомендация
         if total == 1:
-            parts.append("Одна задача.")
-        elif shown < total:
-            parts.append("Главные задачи:")
+            await speak("У вас одна задача.")
         else:
-            parts.append("Задачи:")
+            summary = _build_summary(high, med, low)
+            if summary:
+                await speak(summary)
+            await speak(_recommendation(high, med))
 
-        for task in sorted_tasks:
-            title    = task.get("title", "")
+        # 5. Сами задачи — каждая отдельно, чтобы не было обрезки
+        for task in top:
+            title    = preprocess_for_tts(task.get("title", ""))
             priority = task.get("priority", "LOW")
-            prefix   = _PRIORITY_WORD.get(priority, "")
-            line     = f"{prefix + ' — ' if prefix else ''}{title}."
-            parts.append(line)
+            if priority == "HIGH":
+                line = f"Срочно: {title}."
+            elif priority == "MED":
+                line = f"{title}."
+            else:
+                line = f"{title}."
+            await speak(line)
 
         if total > _MAX_TASKS:
-            parts.append("Остальное — в заметках.")
+            await speak("Остальное — в заметках.")
 
-        text = preprocess_for_tts(" ".join(parts))
-        logger.info("speech: озвучиваем брифинг (%d задач, trigger=%s)", shown, trigger)
-        await self.tts.speak(text)
+        # 6. Завершение
+        await speak("Удачи! Работаю в фоне.")
+
+        logger.info("speech: брифинг завершён (%d задач, trigger=%s)", total, trigger)
 
     async def speak_summary(self, stats: dict) -> None:
-        """
-        Вечерний итог дня — краткая сводка за ~30 секунд.
-        stats: {deep_work_hours, commits, tasks_done, tasks_total, peak_hour}
-        """
+        """Вечерний итог дня."""
         if not self.tts.enabled:
             return
 
@@ -104,8 +146,10 @@ class SpeechOutput:
 
         hours = stats.get("deep_work_hours", 0)
         if hours:
-            parts.append(f"Глубокой работы: {hours:.1f} часа." if hours < 2
-                         else f"Глубокой работы: {hours:.0f} часов.")
+            parts.append(
+                f"Глубокой работы: {hours:.1f} часа."
+                if hours < 2 else f"Глубокой работы: {hours:.0f} часов."
+            )
 
         commits = stats.get("commits", 0)
         if commits:
@@ -115,19 +159,19 @@ class SpeechOutput:
         if peak:
             parts.append(f"Пик активности: {peak}.")
 
-        text = " ".join(parts)
-        logger.info("speech: озвучиваем итог дня")
-        await self.tts.speak(text)
+        for part in parts:
+            await self.tts.speak(part)
+        logger.info("speech: итог дня озвучен")
 
     async def speak_error_alert(self, error: dict) -> None:
-        """Уведомление о спайке ошибок (опционально, не блокирует работу)."""
+        """Уведомление о спайке ошибок."""
         if not self.tts.enabled:
             return
 
-        error_type = error.get("type", "ошибка")
+        error_type = preprocess_for_tts(error.get("type", "ошибка"))
         count      = error.get("count", 0)
         file_name  = error.get("file", "")
-        short_file = file_name.split("/")[-1] if file_name else ""
+        short_file = preprocess_for_tts(file_name.split("/")[-1]) if file_name else ""
 
         text = f"Внимание! {count} ошибок типа {error_type}"
         if short_file:
