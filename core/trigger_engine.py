@@ -351,28 +351,30 @@ class TriggerEngine:
                 )
 
             # 12. Уведомление — кликабельное (XDG portal с кнопкой "Открыть Obsidian")
-            # Задержка 3 сек если голос — чтобы появилось одновременно с речью
-            from core.notifier import notify_tasks
+            # focus_switch пропускаем: announce_focus_switch уже отправил своё уведомление
+            # (два portal-уведомления с одним notif_id заменяют друг друга в GNOME)
+            if trigger != "focus_switch":
+                from core.notifier import notify_tasks
 
-            # Путь к Daily файлу активного проекта для клика → Obsidian
-            obsidian_path = None
-            if current_focus and self._project_writer.shared_root:
-                from datetime import date as _date
-                daily_folder = self._full_config.get("obsidian", {}).get("daily_folder", "Daily")
-                obsidian_path = str(
-                    self._project_writer.shared_root / current_focus
-                    / daily_folder / f"{_date.today().strftime('%d.%m.%Y')}.md"
-                )
+                # Путь к Daily файлу активного проекта для клика → Obsidian
+                obsidian_path = None
+                if current_focus and self._project_writer.shared_root:
+                    from datetime import date as _date
+                    daily_folder = self._full_config.get("obsidian", {}).get("daily_folder", "Daily")
+                    obsidian_path = str(
+                        self._project_writer.shared_root / current_focus
+                        / daily_folder / f"{_date.today().strftime('%d.%m.%Y')}.md"
+                    )
 
-            async def _delayed_notify():
-                if voice:
-                    await asyncio.sleep(3)
-                await notify_tasks(
-                    tasks, prologue=prologue, trigger=trigger,
-                    obsidian_path=obsidian_path,
-                )
+                async def _delayed_notify():
+                    if voice:
+                        await asyncio.sleep(3)
+                    await notify_tasks(
+                        tasks, prologue=prologue, trigger=trigger,
+                        obsidian_path=obsidian_path,
+                    )
 
-            asyncio.create_task(_delayed_notify(), name="notify_tasks")
+                asyncio.create_task(_delayed_notify(), name="notify_tasks")
 
             # 13. Детектируем возможно-выполненные задачи и планируем авто-завершение
             possibly_done = self._find_possibly_done_tasks(tasks, context)

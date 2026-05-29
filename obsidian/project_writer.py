@@ -143,39 +143,23 @@ class ProjectWriter:
             len(tasks), new_project, branch or "?"
         )
 
-        # Уведомление о переключении — СРАЗУ через await
-        # (create_task без strong reference Python GC может убить до запуска)
-        try:
-            from core.notifier import notify, notify_tasks
-            branch_str = f" ({branch})" if branch else ""
-            await notify(
-                f"🎯 Переключаюсь на {new_project}{branch_str}",
-                f"{len(tasks)} накопленных задач",
-                urgency="normal",
-                timeout_ms=8000,
-                icon="appointment-new",
-            )
-        except Exception as e:
-            logger.debug("ProjectWriter: notify (переключение) ошибка — %s", e)
-
-        # Уведомление о задачах — через 3 сек кликабельное (XDG portal)
-        # Сохраняем reference в self чтобы GC не убил task
+        # Одно кликабельное уведомление — имя проекта в заголовке, без задержки
+        # (отдельный notify-send + portal с задержкой приводили к замене друг друга
+        #  в GNOME, т.к. оба уведомления от одного приложения)
         try:
             from core.notifier import notify_tasks
             import asyncio as _aio
-
-            async def _delayed_task_notify():
-                await _aio.sleep(3)
-                await notify_tasks(
-                    tasks, prologue="", trigger="focus_switch",
-                    obsidian_path=str(daily),
-                )
-
+            branch_str = f" ({branch})" if branch else ""
             self._pending_focus_notify = _aio.create_task(
-                _delayed_task_notify(), name="focus_switch_tasks_notify"
+                notify_tasks(
+                    tasks, trigger="focus_switch",
+                    obsidian_path=str(daily),
+                    title=f"🎯 {new_project}{branch_str}",
+                ),
+                name="focus_switch_tasks_notify",
             )
         except Exception as e:
-            logger.debug("ProjectWriter: notify (задачи) ошибка — %s", e)
+            logger.debug("ProjectWriter: notify (переключение+задачи) ошибка — %s", e)
 
         try:
             from voice.speech_output import SpeechOutput

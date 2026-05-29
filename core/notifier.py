@@ -291,6 +291,7 @@ async def notify_tasks(
     prologue: str = "",
     trigger: str = "",
     obsidian_path: str | Path | None = None,
+    title: str = "",
 ) -> None:
     """
     Краткое уведомление: сколько задач ждёт в Obsidian.
@@ -310,7 +311,7 @@ async def notify_tasks(
     else:
         count_str = f"{total} задач"
 
-    title = "🤖 PC Assistant"
+    notif_title = title if title else "🤖 PC Assistant"
     body  = f"Сегодня {count_str} ждут в Obsidian"
     if high:
         body += f" — {high} срочных"
@@ -319,13 +320,13 @@ async def notify_tasks(
         # Кликабельное уведомление — fire-and-forget (внутри ждёт клик до 120с)
         # Сохраняем reference в module-level set чтобы GC не убил task
         task = asyncio.create_task(
-            notify_with_obsidian_action(title, body, obsidian_path=obsidian_path),
+            notify_with_obsidian_action(notif_title, body, obsidian_path=obsidian_path),
             name="notify_tasks_clickable",
         )
         _pending_notify_tasks.add(task)
         task.add_done_callback(_pending_notify_tasks.discard)
     else:
-        await notify(title, body, urgency="normal", timeout_ms=10000, icon="appointment-new")
+        await notify(notif_title, body, urgency="normal", timeout_ms=10000, icon="appointment-new")
 
 
 # Хранилище activated кликабельных уведомлений — strong reference от GC
