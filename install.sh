@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # install.sh — установщик PC Assistant
-# Использование: bash install.sh
+# Использование:
+#   bash install.sh            — обычная установка
+#   bash install.sh --dry-run  — показать что будет сделано, ничего не менять
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -8,6 +10,11 @@ SERVICE_NAME="pc-assistant"
 SERVICE_FILE="$HOME/.config/systemd/user/${SERVICE_NAME}.service"
 CONFIG_LOCAL="$REPO_DIR/config.local.yaml"
 VENV_DIR="$REPO_DIR/.venv"
+
+DRY_RUN=false
+for arg in "$@"; do
+    [[ "$arg" == "--dry-run" ]] && DRY_RUN=true
+done
 
 # ─── Цвета ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -18,6 +25,11 @@ success() { echo -e "${GREEN}✓${NC} $*"; }
 warn()    { echo -e "${YELLOW}!${NC} $*"; }
 error()   { echo -e "${RED}✗${NC} $*" >&2; }
 header()  { echo -e "\n${BOLD}$*${NC}"; }
+dry()     { echo -e "${YELLOW}[dry-run]${NC} $*"; }
+
+if $DRY_RUN; then
+    echo -e "${YELLOW}${BOLD}=== РЕЖИМ ПРОВЕРКИ (--dry-run) — ничего не изменяется ===${NC}\n"
+fi
 
 # ─── 1. Проверка Python ───────────────────────────────────────────────────────
 header "Проверка зависимостей"
@@ -59,32 +71,47 @@ check_cmd git            git
 if [[ ${#MISSING_PKGS[@]} -gt 0 ]]; then
     echo
     warn "Отсутствующие пакеты: ${MISSING_PKGS[*]}"
-    read -rp "Установить автоматически через apt? [Y/n]: " install_pkgs
-    if [[ "${install_pkgs:-Y}" =~ ^[Yy] ]]; then
-        sudo apt install -y "${MISSING_PKGS[@]}"
+    if $DRY_RUN; then
+        dry "sudo apt install -y ${MISSING_PKGS[*]}"
     else
-        warn "Продолжаем без некоторых пакетов — часть функций может не работать"
+        read -rp "Установить автоматически через apt? [Y/n]: " install_pkgs
+        if [[ "${install_pkgs:-Y}" =~ ^[Yy] ]]; then
+            sudo apt install -y "${MISSING_PKGS[@]}"
+        else
+            warn "Продолжаем без некоторых пакетов — часть функций может не работать"
+        fi
     fi
 fi
 
 # ─── 3. Виртуальное окружение ─────────────────────────────────────────────────
 header "Установка зависимостей Python"
 
-if [[ ! -d "$VENV_DIR" ]]; then
-    info "Создаю виртуальное окружение..."
-    "$PYTHON" -m venv "$VENV_DIR"
+if $DRY_RUN; then
+    dry "python3 -m venv $VENV_DIR"
+    dry "pip install -r $REPO_DIR/requirements.txt"
+    success "venv: $VENV_DIR (не создан — dry-run)"
+else
+    if [[ ! -d "$VENV_DIR" ]]; then
+        info "Создаю виртуальное окружение..."
+        "$PYTHON" -m venv "$VENV_DIR"
+    fi
+    success "venv: $VENV_DIR"
+    info "Устанавливаю Python-пакеты..."
+    "$VENV_DIR/bin/pip" install --upgrade pip -q
+    "$VENV_DIR/bin/pip" install -r "$REPO_DIR/requirements.txt" -q
+    success "Зависимости установлены"
 fi
-success "venv: $VENV_DIR"
-
-info "Устанавливаю Python-пакеты..."
-"$VENV_DIR/bin/pip" install --upgrade pip -q
-"$VENV_DIR/bin/pip" install -r "$REPO_DIR/requirements.txt" -q
-success "Зависимости установлены"
 
 # ─── 4. Конфигурация ─────────────────────────────────────────────────────────
 header "Настройка конфигурации"
 
-if [[ -f "$CONFIG_LOCAL" ]]; then
+if $DRY_RUN; then
+    if [[ -f "$CONFIG_LOCAL" ]]; then
+        success "config.local.yaml уже существует — будет сохранён"
+    else
+        dry "Создать $CONFIG_LOCAL с API-ключами (интерактивно)"
+    fi
+elif [[ -f "$CONFIG_LOCAL" ]]; then
     warn "config.local.yaml уже существует — пропускаем создание"
     warn "Если нужно изменить ключи — отредактируй: $CONFIG_LOCAL"
 else
@@ -130,41 +157,57 @@ else
         fi
     } > "$CONFIG_LOCAL"
     success "Создан $CONFIG_LOCAL"
-fi
+fi  # конец блока config (dry-run / уже существует / создаём)
 
 # ─── 5. Obsidian vault ───────────────────────────────────────────────────────
 header "Настройка Obsidian"
 
 CURRENT_OBSIDIAN=$(grep -E "^\s*shared_root:" "$REPO_DIR/config.yaml" | awk '{print $2}' | tr -d '"' | sed "s|~|$HOME|g")
 echo "Текущий путь к Obsidian vault: ${CURRENT_OBSIDIAN:-не задан}"
-read -rp "Путь к папке Obsidian (Enter — оставить текущий): " OBS_PATH
 
-if [[ -n "$OBS_PATH" ]]; then
-    OBS_PATH="${OBS_PATH/#\~/$HOME}"
-    if [[ ! -d "$OBS_PATH" ]]; then
-        warn "Папка не найдена: $OBS_PATH"
-    else
-        # Дописываем в config.local.yaml
-        {
-            echo ""
-            echo "obsidian:"
-            echo "  shared_root: \"$OBS_PATH\""
-            echo "  enabled: true"
-        } >> "$CONFIG_LOCAL"
-        success "Obsidian vault: $OBS_PATH"
+if $DRY_RUN; then
+    dry "Спросить путь к Obsidian и дописать в config.local.yaml"
+else
+    read -rp "Путь к папке Obsidian (Enter — оставить текущий): " OBS_PATH
+    if [[ -n "$OBS_PATH" ]]; then
+        OBS_PATH="${OBS_PATH/#\~/$HOME}"
+        if [[ ! -d "$OBS_PATH" ]]; then
+            warn "Папка не найдена: $OBS_PATH"
+        else
+            {
+                echo ""
+                echo "obsidian:"
+                echo "  shared_root: \"$OBS_PATH\""
+                echo "  enabled: true"
+            } >> "$CONFIG_LOCAL"
+            success "Obsidian vault: $OBS_PATH"
+        fi
     fi
 fi
 
 # ─── 6. Папки с проектами ────────────────────────────────────────────────────
 header "Папки с git-проектами"
 
-echo "Текущие папки для сканирования:"
-grep -A5 "scan_dirs:" "$REPO_DIR/config.yaml" | grep '- "' | sed 's/.*- "/  - /' | tr -d '"'
-echo
-read -rp "Добавить свою папку с проектами (Enter — пропустить): " DEV_PATH
+DEFAULT_DEV="$HOME/Development"
 
-if [[ -n "$DEV_PATH" ]]; then
+if $DRY_RUN; then
+    dry "Спросить папку с проектами (по умолчанию: $DEFAULT_DEV)"
+    dry "Создать папку если не существует"
+    dry "Дописать в config.local.yaml"
+else
+    echo
+    echo "Где хранятся твои git-проекты?"
+    read -rp "Папка с проектами [${DEFAULT_DEV}]: " DEV_PATH
+    DEV_PATH="${DEV_PATH:-$DEFAULT_DEV}"
     DEV_PATH="${DEV_PATH/#\~/$HOME}"
+
+    if [[ ! -d "$DEV_PATH" ]]; then
+        mkdir -p "$DEV_PATH"
+        success "Создана папка: $DEV_PATH"
+    else
+        success "Папка проектов: $DEV_PATH"
+    fi
+
     {
         echo ""
         echo "collectors:"
@@ -175,13 +218,33 @@ if [[ -n "$DEV_PATH" ]]; then
         echo "    watch_dirs:"
         echo "      - \"$DEV_PATH\""
     } >> "$CONFIG_LOCAL"
-    success "Добавлена папка: $DEV_PATH"
 fi
 
 # ─── 7. Systemd сервис ───────────────────────────────────────────────────────
 header "Установка systemd сервиса"
 
 UID_NUM=$(id -u)
+
+if $DRY_RUN; then
+    echo
+    dry "Записать сервис: $SERVICE_FILE"
+    dry "Пути в сервисе:"
+    dry "  ExecStart=${VENV_DIR}/bin/python3 ${REPO_DIR}/main.py"
+    dry "  WorkingDirectory=${REPO_DIR}"
+    if [[ -f "$SERVICE_FILE" ]]; then
+        warn "Существующий сервис будет перезаписан (но это безопасно — пути те же)"
+    fi
+    dry "systemctl --user daemon-reload"
+    dry "systemctl --user enable $SERVICE_NAME  (если согласишься)"
+    dry "systemctl --user restart $SERVICE_NAME (если согласишься)"
+    echo
+    success "Dry-run завершён — всё выглядит корректно"
+    echo
+    echo "Запусти без --dry-run для реальной установки:"
+    echo "  bash $REPO_DIR/install.sh"
+    exit 0
+fi
+
 mkdir -p "$(dirname "$SERVICE_FILE")"
 
 # Генерируем сервис с актуальными путями
