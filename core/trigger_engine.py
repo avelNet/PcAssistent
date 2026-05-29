@@ -142,9 +142,21 @@ class TriggerEngine:
             current or "нет", new_active,
         )
         set_focus(new_active)
+        self._last_known_focus = new_active  # сразу обновляем — _run_llm не будет дублировать
 
-        # Запускаем анализ для нового проекта — внутри _run_llm детектится смена
-        # фокуса и вызывается announce_focus_switch (озвучка накопленных задач)
+        # Анонс немедленно — читает готовый Obsidian-файл, LLM не нужен
+        branch = None
+        snap = await self.context_builder.get_project_snapshot(new_active)
+        if snap:
+            branch = snap.get("branch")
+        asyncio.create_task(
+            self._project_writer.announce_focus_switch(
+                new_active, self._full_config, branch=branch
+            ),
+            name="focus_switch_announce",
+        )
+
+        # LLM-анализ — генерирует свежие задачи, пишет в Obsidian
         await self._try_run("focus_switch", voice=False, force=True)
 
     def _on_process_snapshot(self, data: dict) -> None:
@@ -254,26 +266,7 @@ class TriggerEngine:
             # 1. Собираем контекст
             context = await self.context_builder.build(trigger, extra=extra)
 
-            # 1b. Проверяем переключение фокуса — анонсируем фоновые задачи нового проекта
             current_focus = context.get("focus")
-            if (current_focus
-                    and current_focus != self._last_known_focus):
-                # Находим ветку git нового проекта для голосового анонса
-                branch = None
-                snap = await self.context_builder.get_project_snapshot(current_focus)
-                if snap:
-                    branch = snap.get("branch")
-
-                logger.info(
-                    "TriggerEngine: переключение фокуса %s → %s (ветка=%s), анонсирую",
-                    self._last_known_focus, current_focus, branch or "?"
-                )
-                asyncio.create_task(
-                    self._project_writer.announce_focus_switch(
-                        current_focus, self._full_config, branch=branch
-                    ),
-                    name="focus_switch_announce",
-                )
 
             # 2. Проверяем что контекст изменился
             context_hash = hashlib.md5(
