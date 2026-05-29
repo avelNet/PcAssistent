@@ -38,7 +38,24 @@ def _priority_phrase(count: int, high_word: str, low_word: str) -> str:
 
 
 def _build_summary(high: int, med: int, low: int) -> str:
-    """'У вас 2 срочных, 3 важных и одна обычная.'"""
+    """
+    'У вас 2 срочных, 3 важных и одна обычная.'
+    Если нет HIGH/MED (задачи без приоритета, напр. из чеклиста) —
+    просто 'У вас N задач.' без слова 'обычных'.
+    """
+    total = high + med + low
+    if not total:
+        return ""
+
+    # Нет приоритетных задач — не делаем вид что все "обычные", просто считаем
+    if not high and not med:
+        if total == 1:
+            return "У вас одна задача."
+        elif total in (2, 3, 4):
+            return f"У вас {total} задачи."
+        else:
+            return f"У вас {total} задач."
+
     parts = []
     if high:
         parts.append(_priority_phrase(high, "срочная", "срочных"))
@@ -47,8 +64,6 @@ def _build_summary(high: int, med: int, low: int) -> str:
     if low:
         parts.append(_priority_phrase(low, "обычная", "обычных"))
 
-    if not parts:
-        return ""
     if len(parts) == 1:
         return f"У вас {parts[0]}."
     return "У вас " + ", ".join(parts[:-1]) + " и " + parts[-1] + "."

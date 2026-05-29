@@ -167,7 +167,7 @@ class ProjectWriter:
             branch_str_voice = f" на ветке {branch}" if branch else ""
             prologue = (
                 f"Переключаюсь на проект {new_project}{branch_str_voice}. "
-                f"Вот задачи которые я подготовил в фоне:"
+                f"Вот задачи которые я нашла в заметках:"
             )
             await sp.speak_tasks(tasks, prologue=prologue, trigger="focus_switch")
         except Exception as e:
