@@ -52,169 +52,82 @@ async def notify(
         logger.debug("notifier: ошибка — %s", e)
 
 
-def _notify_portal_blocking(
+async def _notify_send_with_action(
     title: str,
     body: str,
-    obsidian_path: str | None,
-) -> tuple[bool, str | None, bool]:
+) -> tuple[bool, str | None]:
     """
-    Уведомление через XDG Desktop Portal (D-Bus).
-    На GNOME 43+: ActionInvoked содержит activation-token → Obsidian может получить фокус.
+    notify-send ≥0.8 с --action и --activation-token-fd.
+    Ждёт клика пользователя (или истечения expire-time).
     Возвращает (clicked, activation_token).
+
+    Полностью заменяет GLib.MainLoop-подход — тот создавал временную запись
+    приложения в доке GNOME при каждом вызове (мерцание).
     """
+    r_fd, w_fd = os.pipe()
+    cmd = [
+        "notify-send",
+        "--app-name=PC Assistant",
+        "--app-icon=appointment-new",
+        "--expire-time=30000",
+        f"--activation-token-fd={w_fd}",
+        "--action=open:Открыть Obsidian",
+        title,
+    ]
+    if body:
+        cmd.append(body)
+
     try:
-        import gi
-        gi.require_version("Gio", "2.0")
-        from gi.repository import Gio, GLib
-    except Exception as e:
-        logger.debug("notifier: gi.repository.Gio недоступен — %s", e)
-        return False, None, False
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            pass_fds=(w_fd,),
+        )
+        os.close(w_fd)  # закрываем write-конец в родительском процессе
 
-    clicked = []
-    token: list[str] = []
-    loop = GLib.MainLoop()
-    sub_id: list[int] = []
-
-    try:
-        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-    except Exception as e:
-        logger.debug("notifier: не удалось подключиться к session bus — %s", e)
-        return False, None, False
-
-    notif_id = "pc-assistant-focus"
-
-    def on_action_invoked(conn, sender, obj_path, iface, sig, params, _):
         try:
-            vals = params.unpack()
-            # vals = (id, action) или (id, action, {extra})
-            if len(vals) >= 2 and vals[0] == notif_id:
-                clicked.append(True)
-                if len(vals) >= 3 and isinstance(vals[2], dict):
-                    t = vals[2].get("activation-token")
-                    if t:
-                        token.append(t)
-        except Exception:
-            pass
-        loop.quit()
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=35)
+        except asyncio.TimeoutError:
+            proc.kill()
+            try:
+                os.close(r_fd)
+            except OSError:
+                pass
+            return False, None
 
-    sub_id.append(bus.signal_subscribe(
-        None,
-        "org.freedesktop.portal.Notification",
-        "ActionInvoked",
-        "/org/freedesktop/portal/desktop",
-        None,
-        Gio.DBusSignalFlags.NONE,
-        on_action_invoked,
-        None,
-    ))
+        # Читаем activation token — после завершения notify-send write-конец закрыт,
+        # поэтому read() вернёт сразу (EOF или данные)
+        try:
+            token_raw = os.read(r_fd, 512)
+        except OSError:
+            token_raw = b""
+        finally:
+            try:
+                os.close(r_fd)
+            except OSError:
+                pass
 
-    # Строим уведомление как Python-dict (GLib создаёт Variant рекурсивно)
-    notification_dict = {
-        "title":    GLib.Variant("s", title),
-        "body":     GLib.Variant("s", body),
-        "priority": GLib.Variant("s", "high"),
-        # icon обязателен — без него GNOME ищет приложение по D-Bus sender (:1.NNN),
-        # не находит .desktop и создаёт временную запись в доке (мерцание)
-        "icon":     GLib.Variant("(sv)", ("themed-icon", GLib.Variant("as", ["appointment-new"]))),
-        "default-action-target": GLib.Variant("s", "pc-assistant"),
-        "buttons":  GLib.Variant("aa{sv}", [
-            {
-                "label":  GLib.Variant("s", "Открыть Obsidian"),
-                "action": GLib.Variant("s", "open"),
-            }
-        ]),
-    }
+        token = token_raw.decode().strip() or None
+        action = stdout.decode().strip()
+        return action == "open", token
 
-    try:
-        bus.call_sync(
-            "org.freedesktop.portal.Desktop",
-            "/org/freedesktop/portal/desktop",
-            "org.freedesktop.portal.Notification",
-            "AddNotification",
-            GLib.Variant("(sa{sv})", (notif_id, notification_dict)),
-            None,
-            Gio.DBusCallFlags.NONE,
-            -1,
-            None,
-        )
+    except FileNotFoundError:
+        logger.debug("notifier: notify-send не найден")
+        for fd in (r_fd, w_fd):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        return False, None
     except Exception as e:
-        logger.debug("notifier: portal AddNotification ошибка — %s", e)
-        if sub_id:
-            bus.signal_unsubscribe(sub_id[0])
-        return False, None, False  # портал недоступен — нужен fallback
-
-    GLib.timeout_add_seconds(120, loop.quit)
-    loop.run()
-
-    if sub_id:
-        bus.signal_unsubscribe(sub_id[0])
-
-    # Убираем уведомление
-    try:
-        bus.call_sync(
-            "org.freedesktop.portal.Desktop",
-            "/org/freedesktop/portal/desktop",
-            "org.freedesktop.portal.Notification",
-            "RemoveNotification",
-            GLib.Variant("(s)", (notif_id,)),
-            None,
-            Gio.DBusCallFlags.NONE,
-            -1,
-            None,
-        )
-    except Exception:
-        pass
-
-    # shown=True: уведомление было показано (даже если не кликнули)
-    return bool(clicked), token[0] if token else None, True
-
-
-def _notify_blocking(
-    title: str,
-    body: str,
-    obsidian_path: str | None,
-) -> bool:
-    """
-    Fallback через gi.repository.Notify (libnotify).
-    Используется если XDG Portal недоступен.
-    """
-    try:
-        import gi
-        gi.require_version("Notify", "0.7")
-        from gi.repository import Notify, GLib
-    except Exception as e:
-        logger.debug("notifier: gi.repository.Notify недоступен — %s", e)
-        return False
-
-    clicked = []
-
-    Notify.init("pc-assistant")
-    notif = Notify.Notification.new(title, body, "appointment-new")
-    notif.set_urgency(Notify.Urgency.CRITICAL)
-    notif.set_timeout(Notify.EXPIRES_NEVER)
-
-    loop = GLib.MainLoop()
-
-    def on_action(notification, action_name, user_data):
-        clicked.append(True)
-        loop.quit()
-
-    def on_closed(notification):
-        loop.quit()
-
-    notif.add_action("open", "Открыть Obsidian", on_action, None)
-    notif.connect("closed", on_closed)
-
-    try:
-        notif.show()
-    except Exception as e:
-        logger.debug("notifier: notif.show() ошибка — %s", e)
-        return False
-
-    GLib.timeout_add_seconds(120, loop.quit)
-    loop.run()
-
-    return bool(clicked)
+        logger.debug("notifier: notify-send+action ошибка — %s", e)
+        for fd in (r_fd, w_fd):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        return False, None
 
 
 async def notify_with_obsidian_action(
@@ -223,23 +136,15 @@ async def notify_with_obsidian_action(
     obsidian_path: str | Path | None = None,
 ) -> None:
     """
-    Уведомление с кнопкой «Открыть Obsidian».
-    Использует XDG Portal для получения activation token → Obsidian получает фокус на Wayland.
+    Кликабельное уведомление с кнопкой «Открыть Obsidian».
+    Использует notify-send --action + --activation-token-fd (≥0.8).
+    activation token → Obsidian получает фокус на Wayland без dock-мерцания.
     """
     import urllib.parse
 
     path_str = str(obsidian_path) if obsidian_path else None
 
-    # Пробуем portal (с activation token)
-    clicked, activation_token, portal_shown = await asyncio.to_thread(
-        _notify_portal_blocking, title, body, path_str
-    )
-
-    # Fallback на libnotify только если портал НЕ смог показать уведомление
-    # (если показал но не кликнули — не показываем второе)
-    if not portal_shown:
-        clicked = await asyncio.to_thread(_notify_blocking, title, body, path_str)
-        activation_token = None
+    clicked, activation_token = await _notify_send_with_action(title, body)
 
     if not clicked:
         return
@@ -259,7 +164,6 @@ async def notify_with_obsidian_action(
             pass
 
     # Фокусируем Obsidian через activation token (Wayland XDG activation)
-    # Electron читает DESKTOP_STARTUP_ID / XDG_ACTIVATION_TOKEN и запрашивает фокус у композитора
     focus_env = dict(os.environ)
     if activation_token:
         focus_env["DESKTOP_STARTUP_ID"] = activation_token
