@@ -451,31 +451,50 @@ class TriggerEngine:
                     name="speak_tasks",
                 )
 
-            # 12. Уведомление — кликабельное (XDG portal с кнопкой "Открыть Obsidian")
-            # focus_switch пропускаем: announce_focus_switch уже отправил своё уведомление
-            # (два portal-уведомления с одним notif_id заменяют друг друга в GNOME)
-            if trigger != "focus_switch":
-                from core.notifier import notify_tasks
+            # 12. Уведомление
+            # focus_switch — не нужно, announce_focus_switch уже отправил
+            # evening_summary / weekly_report — простое информационное, без ожидания клика
+            # остальные — кликабельное с кнопкой "Открыть Obsidian"
+            _simple_triggers = {"evening_summary", "weekly_report", "git_activity",
+                                 "after_work_session", "branch_switch"}
+            if trigger not in {"focus_switch"}:
+                from core.notifier import notify_tasks, notify
 
-                # Путь к Daily файлу активного проекта для клика → Obsidian
-                obsidian_path = None
-                if current_focus and self._project_writer.shared_root:
-                    from datetime import date as _date
-                    daily_folder = self._full_config.get("obsidian", {}).get("daily_folder", "Daily")
-                    obsidian_path = str(
-                        self._project_writer.shared_root / current_focus
-                        / daily_folder / f"{_date.today().strftime('%d.%m.%Y')}.md"
-                    )
+                if trigger in _simple_triggers:
+                    # Простое уведомление — не ждём клика, не блокируем event loop
+                    async def _simple_notify():
+                        if voice:
+                            await asyncio.sleep(2)
+                        total = len(tasks)
+                        high  = sum(1 for t in tasks if t.get("priority") == "HIGH")
+                        body  = prologue.strip()[:120] if prologue else f"{total} задач обновлено"
+                        if high:
+                            body += f" — {high} срочных"
+                        await notify(
+                            f"🤖 PC Assistant [{trigger}]", body,
+                            urgency="normal", timeout_ms=8000, icon="appointment-new",
+                        )
+                    asyncio.create_task(_simple_notify(), name="notify_simple")
+                else:
+                    # Кликабельное с кнопкой "Открыть Obsidian"
+                    obsidian_path = None
+                    if current_focus and self._project_writer.shared_root:
+                        from datetime import date as _date
+                        daily_folder = self._full_config.get("obsidian", {}).get("daily_folder", "Daily")
+                        obsidian_path = str(
+                            self._project_writer.shared_root / current_focus
+                            / daily_folder / f"{_date.today().strftime('%d.%m.%Y')}.md"
+                        )
 
-                async def _delayed_notify():
-                    if voice:
-                        await asyncio.sleep(3)
-                    await notify_tasks(
-                        tasks, prologue=prologue, trigger=trigger,
-                        obsidian_path=obsidian_path,
-                    )
+                    async def _delayed_notify():
+                        if voice:
+                            await asyncio.sleep(3)
+                        await notify_tasks(
+                            tasks, prologue=prologue, trigger=trigger,
+                            obsidian_path=obsidian_path,
+                        )
 
-                asyncio.create_task(_delayed_notify(), name="notify_tasks")
+                    asyncio.create_task(_delayed_notify(), name="notify_tasks")
 
             # 13. Детектируем возможно-выполненные задачи и планируем авто-завершение
             possibly_done = self._find_possibly_done_tasks(tasks, context)

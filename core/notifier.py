@@ -113,7 +113,7 @@ async def _notify_send_with_action(
         return action == "open", token
 
     except FileNotFoundError:
-        logger.debug("notifier: notify-send не найден")
+        logger.warning("notifier: notify-send не найден — sudo apt install libnotify-bin")
         for fd in (r_fd, w_fd):
             try:
                 os.close(fd)
@@ -121,7 +121,7 @@ async def _notify_send_with_action(
                 pass
         return False, None
     except Exception as e:
-        logger.debug("notifier: notify-send+action ошибка — %s", e)
+        logger.warning("notifier: notify-send+action ошибка — %s", e)
         for fd in (r_fd, w_fd):
             try:
                 os.close(fd)
