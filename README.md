@@ -1,110 +1,168 @@
 # PC Assistant
 
-Локальный AI-ассистент для Linux-разработчика.
+Фоновый AI-ассистент для разработчика на Linux. Наблюдает за работой и несколько раз в день голосом и в Obsidian говорит что важно — в нужный момент, коротко и по делу.
 
-Наблюдает за работой в фоне и несколько раз в день, в нужный момент, коротко и по делу говорит что важно — голосом и в Obsidian. Всё остаётся на машине.
+[![v1.1.1](https://img.shields.io/badge/version-1.1.1-blue)](https://github.com/avelNet/PcAssistent/releases)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-green)](https://python.org)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
 
-## Что умеет
+---
 
-**Анализ и задачи**
-- Следит за git-репозиториями, JetBrains IDE, буфером обмена, процессами
-- Запускает LLM 3–5 раз в день — только когда ты не работаешь активно
-- Формулирует задачи простым языком без жаргона: «сохранить в git» вместо «закоммитить»
-- Описание каждой задачи объясняет ЗАЧЕМ, а не ЧТО делать
+## Что делает
 
-**Obsidian-интеграция**
-- Пишет задачи в `~/Obsidian/{project}/Daily/DD.MM.YYYY.md` — каждый проект отдельно
-- Создаёт структуру документации для активного проекта:
-  - `Dashboard.md` — статус, коммиты, навигация (обновляется каждый цикл)
-  - `Architecture.md` — из ТЗ.md/README.md репозитория (создаётся один раз)
-  - `Dev Log/` — ошибки и коммиты текущей сессии
-  - `Decisions/` — для твоих архитектурных решений
-- При смене фокус-проекта озвучивает накопленные фоновые задачи
+- **Следит** за git-репозиториями, JetBrains IDE, буфером обмена, процессами
+- **Анализирует** контекст через LLM 3–5 раз в день — только в паузах между работой
+- **Говорит** голосом что важно: при переключении проекта, утром, вечером, после сессии
+- **Пишет задачи** в Obsidian простым языком с объяснением ЗАЧЕМ, не ЧТО
+- **Следит за зависшими** задачами: 3+ дня без закрытия → понижает приоритет
 
-**Умная синхронизация задач**
-- Выполненные `[x]` задачи не теряются при повторном анализе
-- Детектирует задачи которые скорее всего уже выполнены (по коммитам) → напоминает → отмечает сам через 30 мин с подписью `<!-- ✓ ассистент -->`
-- Двусторонняя синхронизация: отметил в Obsidian → обновилось в базе
+---
 
-**Фоновый анализ**
-- Тихо анализирует все проекты из `~/Development/` кроме активного
-- Пишет задачи в Obsidian без голоса и уведомлений
-- При переключении на проект — анонсирует что накопилось
+## Возможности
 
-**Голос и уведомления**
-- Русский нейросетевой TTS (Supertonic)
-- Одно аккуратное уведомление: максимум 2 задачи, текст обрезан, счётчик остальных
+### Голос и уведомления
+- Облачный русский TTS — **SberSaluteSpeech** (бесплатно 200к симв/мес)
+- При переключении проекта в JetBrains: мгновенный голосовой анонс + свежие задачи
+- Кликабельные уведомления GNOME → открывают Obsidian на нужной заметке
+- Утренний брифинг, вечерний итог, напоминание после возвращения
+- **Telegram**: дублирует срочные задачи когда отошёл от ПК (опционально)
+
+### Задачи и Obsidian
+- Задачи пишутся в `~/Obsidian/{project}/Daily/DD.MM.YYYY.md` — каждый проект отдельно
+- Структура документации для каждого проекта: Dashboard, Architecture, Dev Log, Decisions, Roadmap
+- Выполненные `[x]` задачи сохраняются при каждом обновлении
+- Задачи предлагает закоммитить в конце рабочей сессии (LLM генерирует commit message)
+- Rollover: незакрытые задачи переносятся на следующий день
+
+### JetBrains IDE
+- Определяет активный проект через `recentProjects.xml` (inotify, ≤5 сек)
+- При смене проекта — голосовой анонс + пересчёт задач
+- При смене git-ветки — голосовой анонс + пересчёт контекста
+
+### LLM
+- Цепочка провайдеров: **OpenRouter** (частые запросы) → **Groq** (сложные задачи) → **Ollama** (офлайн)
+- Контекст фильтруется строго по активному проекту — нет смешения задач между проектами
+- История команд терминала (`~/.bash_history`) в контексте LLM
+
+---
 
 ## Стек
 
 | Задача | Инструмент |
-|---|---|
-| LLM | Ollama + `qwen2.5:14b` (локально) |
-| Голос | Supertonic TTS (нейросеть, русский) |
+|--------|-----------|
+| LLM (облако) | OpenRouter (бесплатные модели) + Groq (Llama 3.3 70B) |
+| LLM (офлайн) | Ollama + qwen2.5:7b |
+| Голос | SberSaluteSpeech REST API |
 | Заметки | Obsidian — прямая запись в файловую систему |
-| Файловые события | `watchdog` (inotify) |
+| Файловые события | `watchdog` (inotify/kqueue) |
 | Хранилище | SQLite |
-| Трей | GTK AppIndicator3 |
+| Трей | GTK AppIndicator3 (опционально) |
 
-## Быстрый старт
+---
+
+## Установка
 
 ```bash
-# Зависимости
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+git clone https://github.com/avelNet/PcAssistent.git
+cd PcAssistent
 
-# Ollama
-curl -fsSL https://ollama.com/install.sh | sh
-ollama serve &
-ollama pull qwen2.5:14b   # или qwen2.5:7b для слабых машин
+# Проверить что будет сделано
+bash install.sh --dry-run
 
-# Проверка
-python main.py --check
-
-# Первый запуск
-python main.py --trigger manual
+# Установить
+bash install.sh
 ```
+
+Установщик интерактивно спросит:
+- API-ключи (OpenRouter, Groq, SaluteSpeech)
+- Путь к папке Obsidian vault
+- Папку с проектами (`~/Development` по умолчанию)
+- Модель Ollama для офлайн-режима (3b/7b/14b)
+
+### API-ключи (бесплатно)
+
+| Сервис | Где взять | Лимит |
+|--------|-----------|-------|
+| **OpenRouter** | [openrouter.ai/keys](https://openrouter.ai/keys) | Бесплатные модели |
+| **Groq** | [console.groq.com/keys](https://console.groq.com/keys) | 1000 запросов/день |
+| **SaluteSpeech** | [developers.sber.ru](https://developers.sber.ru) | 200 000 симв/мес |
+
+---
+
+## Конфигурация
+
+Основной конфиг — `config.yaml`. Секреты — `config.local.yaml` (в `.gitignore`):
+
+```yaml
+# config.local.yaml
+openrouter:
+  api_key: "sk-or-..."
+
+groq:
+  api_key: "gsk_..."
+
+salute_speech:
+  credentials: "base64..."
+  scope: "SALUTE_SPEECH_PERS"
+
+voice:
+  engine: "salute"
+  voice: "Nec_24000"   # Nec=женский, Bys/Tur/Ost=мужской
+
+# Опционально:
+telegram:
+  enabled: true
+  bot_token: "123456:ABC..."
+  chat_id: "123456789"
+
+auto_commit:
+  enabled: true
+
+proxy:
+  url: "http://user:pass@host:8080"   # HTTP или socks5://
+```
+
+---
 
 ## Управление
 
 ```bash
-# Статус сервиса
+# Статус
 systemctl --user status pc-assistant
 
-# Запуск / остановка / перезапуск
-systemctl --user start pc-assistant
-systemctl --user stop pc-assistant
+# Перезапуск
 systemctl --user restart pc-assistant
 
-# Запуск при старте системы
-systemctl --user enable pc-assistant
+# Логи в реальном времени
+journalctl --user -u pc-assistant -f
 
 # Переключить активный проект
 python main.py --focus PcAssistent
-python main.py --focus Tap2Go
-python main.py --focus off        # сбросить фокус
+python main.py --focus off
 
 # Ручной запуск анализа
 python main.py --trigger manual
-
-# Логи
-journalctl --user -u pc-assistant -f
 ```
+
+---
 
 ## Структура проекта
 
 ```
-core/         — EventBus, Orchestrator, TriggerEngine, Notifier
-collectors/   — git, JetBrains, clipboard, filesystem, process monitor
-llm/          — Ollama client, context builder, prompt engine, task parser
+core/         — EventBus, Orchestrator, TriggerEngine, Notifier, Telegram
+collectors/   — git, JetBrains (inotify), clipboard, filesystem, process monitor
+llm/          — OpenRouter/Groq/Ollama clients, context builder, prompt engine
 storage/      — SQLite (db, context store, focus store)
-obsidian/     — client, task syncer, vault reader, project writer, progress tracker
-voice/        — Supertonic TTS pipeline, speech output
+obsidian/     — task syncer, vault reader, project writer, progress tracker
+voice/        — SaluteSpeech TTS, speech output, TTS preprocessor
 productivity/ — session tracker, focus analyzer, stats builder
 errors/       — runtime watcher, static analyzer, error store
 ui/           — GTK system tray
-systemd/      — unit-файл и install.sh
+systemd/      — unit-файл
+install.sh    — установщик
 ```
+
+---
 
 ## Структура Obsidian
 
@@ -113,23 +171,21 @@ systemd/      — unit-файл и install.sh
   {ProjectName}/
     Dashboard.md          ← статус + git (обновляется автоматически)
     Architecture.md       ← из ТЗ.md / README.md (создаётся один раз)
+    Roadmap.md            ← план проекта (LLM генерирует из README)
     Daily/
-      DD.MM.YYYY.md       ← задачи дня
+      DD.MM.YYYY.md       ← задачи дня, rollover незакрытых
     Dev Log/
       DD.MM.YYYY.md       ← коммиты, ошибки сессии
     Decisions/
-      README.md           ← ты заполняешь вручную
+      README.md           ← архитектурные решения (заполняешь сам)
 ```
 
-## Требования
+---
 
-- Linux (X11 или Wayland + GNOME)
-- Python 3.11+
-- RAM: 8 GB минимум (16 GB рекомендуется для `qwen2.5:14b`)
-- GPU: опционально (без GPU ~3–5 мин вместо ~30 сек на генерацию)
-- `wmctrl` — для управления окнами на X11 (`sudo apt install wmctrl`)
-- `xdotool` — для Wayland/XWayland (`sudo apt install xdotool`)
+## Системные требования
 
-## Документация
-
-Полная архитектура и ТЗ — [ТЗ.md](ТЗ.md)
+- **OS**: Linux (Ubuntu 22.04+), GNOME Wayland или X11
+- **Python**: 3.11+
+- **Пакеты**: `aplay` (alsa-utils), `notify-send` ≥0.8 (libnotify-bin), `wl-clipboard`
+- **RAM**: 4 GB минимум (без Ollama); 8 GB для qwen2.5:7b офлайн
+- **Интернет**: нужен для OpenRouter/Groq/SaluteSpeech; Ollama работает офлайн
