@@ -94,54 +94,53 @@ class ClipboardWatcher:
 
     async def _watch_wayland(self) -> None:
         """
-        wl-paste --watch cat — один долгоживущий процесс.
-        При каждом изменении буфера выдаёт его содержимое в stdout.
-        Никаких polling, никаких временных окон.
+        wl-paste --watch cat — долгоживущий процесс с авто-перезапуском.
+        После suspend/resume wl-paste может умереть — перезапускаем через 5 сек.
         """
-        try:
-            self._wl_proc = await asyncio.create_subprocess_exec(
-                "wl-paste", "--watch", "cat",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-        except FileNotFoundError:
-            logger.warning(
-                "ClipboardWatcher: wl-paste не найден — "
-                "sudo apt install wl-clipboard"
-            )
-            return
+        while True:
+            try:
+                self._wl_proc = await asyncio.create_subprocess_exec(
+                    "wl-paste", "--watch", "cat",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+            except FileNotFoundError:
+                logger.warning(
+                    "ClipboardWatcher: wl-paste не найден — "
+                    "sudo apt install wl-clipboard"
+                )
+                return  # нет смысла retry если пакет не установлен
 
-        # Читаем stdout порциями. wl-paste пишет всё содержимое и не вставляет
-        # разделитель — определяем границы по EOF / большим паузам.
-        buffer = bytearray()
+            logger.debug("ClipboardWatcher: wl-paste запущен (pid=%s)", self._wl_proc.pid)
+            buffer = bytearray()
 
-        try:
-            while True:
-                try:
-                    chunk = await asyncio.wait_for(
-                        self._wl_proc.stdout.read(65536),
-                        timeout=0.5,
-                    )
-                except asyncio.TimeoutError:
-                    # Пауза — флашим буфер если что-то накопилось
-                    if buffer:
-                        text = buffer.decode("utf-8", errors="replace")
-                        self._process(text)
+            try:
+                while True:
+                    try:
+                        chunk = await asyncio.wait_for(
+                            self._wl_proc.stdout.read(65536),
+                            timeout=0.5,
+                        )
+                    except asyncio.TimeoutError:
+                        if buffer:
+                            text = buffer.decode("utf-8", errors="replace")
+                            self._process(text)
+                            buffer.clear()
+                        continue
+
+                    if not chunk:  # EOF — процесс умер
+                        logger.debug("ClipboardWatcher: wl-paste завершился, перезапуск через 5 сек")
+                        break
+
+                    buffer.extend(chunk)
+                    if len(buffer) > 1_000_000:
                         buffer.clear()
-                    continue
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("ClipboardWatcher: ошибка чтения wl-paste", exc_info=True)
 
-                if not chunk:  # EOF — процесс умер
-                    logger.debug("ClipboardWatcher: wl-paste завершился")
-                    break
-
-                buffer.extend(chunk)
-                # Если накопили достаточно — обрабатываем сразу
-                if len(buffer) > 1_000_000:  # 1MB защита от утечки
-                    buffer.clear()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.debug("ClipboardWatcher: ошибка чтения wl-paste", exc_info=True)
+            await asyncio.sleep(5)  # пауза перед перезапуском
 
     def get_history(self, limit: int = 10) -> list[dict]:
         items = list(self._history)

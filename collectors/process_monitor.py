@@ -62,11 +62,12 @@ class ProcessMonitor:
         self._session_id: str | None = None
 
         # Состояние сессии
-        self._session_start_ts: float | None = None   # когда началась рабочая сессия
-        self._locked_at_ts: float | None = None       # когда экран заблокировали
-        self._idle_at_ts: float | None = None         # когда ушёл в idle
+        self._session_start_ts: float | None = None
+        self._locked_at_ts: float | None = None
+        self._idle_at_ts: float | None = None
         self._was_working: bool = False
         self._was_locked: bool = False
+        self._last_tick_ts: float = time.time()  # для детекта suspend/resume
 
     async def start(self) -> None:
         self._session_id = await asyncio.to_thread(self._find_graphical_session)
@@ -101,9 +102,10 @@ class ProcessMonitor:
     def _collect(self) -> ProcessSnapshot:
         snap = ProcessSnapshot()
 
-        # Блокировка экрана через loginctl
-        snap.is_locked = self._check_locked()
-        snap.is_idle = self._check_idle()
+        # Один вызов loginctl — оба свойства сразу (меньше subprocess-флешей в доке)
+        loginctl = self._loginctl_show()
+        snap.is_locked = loginctl.get("LockedHint") == "yes"
+        snap.is_idle   = loginctl.get("IdleHint")   == "yes"
 
         # Список активных процессов
         active_names: set[str] = set()
@@ -150,30 +152,62 @@ class ProcessMonitor:
             logger.debug("ProcessMonitor: не удалось найти сессию: %s", e)
         return None
 
-    def _loginctl_prop(self, prop: str) -> str:
-        """Получить свойство текущей loginctl сессии."""
+    def _loginctl_show(self) -> dict[str, str]:
+        """
+        Один вызов loginctl show-session → словарь всех свойств.
+        При ошибке переоткрывает session_id (актуально после suspend/resume).
+        """
         if not self._session_id:
-            return ""
+            self._session_id = self._find_graphical_session()
+        if not self._session_id:
+            return {}
         try:
             out = subprocess.check_output(
-                ["loginctl", "show-session", self._session_id,
-                 f"--property={prop}", "--value"],
-                text=True, timeout=3
+                ["loginctl", "show-session", self._session_id],
+                text=True, timeout=3,
+                stderr=subprocess.DEVNULL,
             )
-            return out.strip()
+            props: dict[str, str] = {}
+            for line in out.splitlines():
+                if "=" in line:
+                    k, _, v = line.partition("=")
+                    props[k.strip()] = v.strip()
+            return props
         except Exception:
-            return ""
+            # Сессия недоступна (suspend/resume) — сбрасываем, найдём заново
+            logger.debug("ProcessMonitor: сессия %s недоступна, переоткрываю", self._session_id)
+            self._session_id = None
+            return {}
 
     def _check_locked(self) -> bool:
-        return self._loginctl_prop("LockedHint") == "yes"
+        return self._loginctl_show().get("LockedHint") == "yes"
 
     def _check_idle(self) -> bool:
-        return self._loginctl_prop("IdleHint") == "yes"
+        return self._loginctl_show().get("IdleHint") == "yes"
 
     # ─── Логика сессий и триггеров ───────────────────────────────────────────
 
     async def _handle_snapshot(self, snap: ProcessSnapshot) -> None:
         now = time.time()
+
+        # ── Детект suspend/resume ──────────────────────────────────────────
+        # Если между тиками прошло намного больше interval_sec — машина спала.
+        # Эмитируем user.returned если пробуждение после >5 мин сна.
+        gap = now - self._last_tick_ts
+        if gap > self.interval_sec * 3:  # проснулись после длинной паузы
+            sleep_min = gap / 60
+            logger.info("ProcessMonitor: пробуждение после %.0f мин сна", sleep_min)
+            if sleep_min >= 5:
+                await self.bus.emit("user.returned", {
+                    "idle_was_min": round(sleep_min),
+                    "reason": "resume",
+                })
+            # Сбрасываем состояния — они устарели за время сна
+            self._locked_at_ts = None
+            self._was_locked   = False
+            self._session_start_ts = None
+            self._was_working  = False
+        self._last_tick_ts = now
 
         # ── Блокировка экрана ──────────────────────────────────────────────
         if snap.is_locked and not self._was_locked:
